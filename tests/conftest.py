@@ -67,6 +67,24 @@ def _real_std_streams(monkeypatch: pytest.MonkeyPatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_registry_env():
+    """Undo any ``LUDVART_MODELS_FILE`` a test points at its own temp registry.
+
+    Several tests redirect the registry so they never touch the developer's real
+    ``~/.ludvart/models.json``, but they set the variable in place. Restoring it
+    afterwards keeps that redirect from leaking into unrelated tests (whose
+    outcome would then depend on the run order).
+    """
+    sentinel = object()
+    previous = os.environ.get("LUDVART_MODELS_FILE", sentinel)
+    yield
+    if previous is sentinel:
+        os.environ.pop("LUDVART_MODELS_FILE", None)
+    else:
+        os.environ["LUDVART_MODELS_FILE"] = previous
+
+
 @pytest.fixture
 def tmp(tmp_path: Path) -> str:
     """A throwaway directory as a plain string path.

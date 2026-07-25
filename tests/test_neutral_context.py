@@ -10,8 +10,8 @@ and multiple clients can coexist). These tests cover:
     results paired correctly per provider;
   * neutralize_history passes neutral (v3+) histories through untouched and
     migrates older provider-native histories to the neutral form;
-  * the agent loop (`_ask_llm`) stores neutral entries, so the same ongoing
-    conversation can be picked up by a different model.
+  * the backend agent loop (`AgentCore.run_turn`) stores neutral entries, so
+    the same ongoing conversation can be picked up by a different model.
 
 Run:
     cd /local_home/bgerofi1/src/ludvart && source .venv/bin/activate \
@@ -36,8 +36,9 @@ from ludvart.llm import (  # noqa: E402
     Turn,
     Usage,
 )
-from ludvart.panel import AiPanel  # noqa: E402
-from ludvart.ludvart import Ludvart  # noqa: E402
+from ludvart.agent_core import AgentCore  # noqa: E402
+from ludvart.tools import builtin_tool_specs  # noqa: E402
+from ludvart.terminal_host import TerminalHost  # noqa: E402
 from ludvart.session import (  # noqa: E402
     NEUTRAL_SESSIONS_VERSION,
     SessionStore,
@@ -257,26 +258,45 @@ class _ToolThenAnswerLLM:
         )
 
 
-def _make_ludvart(root: Path) -> Ludvart:
+class _Host(TerminalHost):
+    def snapshot(self):
+        return "SCREEN"
+
+    def run_terminal_tool(self, name, args):
+        return "ok"
+
+    def narrate(self, text):
+        pass
+
+    def set_activity(self, label):
+        pass
+
+    def add_info(self, text):
+        pass
+
+    def set_context_pct(self, pct):
+        pass
+
+
+def _make_core(root: Path) -> AgentCore:
     os.environ["LUDVART_SESSIONS_DIR"] = str(root)
-    r = Ludvart(["true"])
-    r._panel = AiPanel(cols=80, height=8, provider="fake")
-    r._phys_rows, r._phys_cols = 24, 80
-    r._render_split = lambda: None
-    r._session = SessionStore()
-    r.snapshot_text = lambda: "SCREEN"
-    return r
+    return AgentCore(
+        _ToolThenAnswerLLM(),
+        _Host(),
+        system_prompt="SYS",
+        tools=builtin_tool_specs(),
+        session=SessionStore(),
+    )
 
 
-def test_ask_llm_stores_neutral_log():
+def test_agent_loop_stores_neutral_log():
     root = Path(tempfile.mkdtemp())
-    r = _make_ludvart(root)
-    r.llm = _ToolThenAnswerLLM()
+    core = _make_core(root)
 
-    result = r._ask_llm("encode hi")
+    result = core.run_turn("encode hi", "SCREEN")
     assert result == "done", result
 
-    log = r._llm_history
+    log = core.history
     # user, assistant(tool_call), tool result, assistant(answer)
     roles = [e["role"] for e in log]
     assert roles == ["user", "assistant", "tool", "assistant"], roles
@@ -296,7 +316,7 @@ def test_ask_llm_stores_neutral_log():
     # No provider-native artifacts leaked into the stored log.
     assert "function" not in json.dumps(log)
     assert "tool_use" not in json.dumps(log)
-    print("ask_llm stores neutral log: OK")
+    print("agent loop stores neutral log: OK")
 
 
 def test_ongoing_conversation_picked_up_by_other_model():
@@ -307,12 +327,11 @@ def test_ongoing_conversation_picked_up_by_other_model():
     with a user tool_result -- so a mid-conversation model switch just works.
     """
     root = Path(tempfile.mkdtemp())
-    r = _make_ludvart(root)
-    r.llm = _ToolThenAnswerLLM()
-    r._ask_llm("encode hi")
+    core = _make_core(root)
+    core.run_turn("encode hi", "SCREEN")
 
     # Rebuild the running log as Anthropic would receive it.
-    ctx = build_context(r._llm_history, "anthropic")
+    ctx = build_context(core.history, "anthropic")
     assistant = next(m for m in ctx if m["role"] == "assistant")
     tool_use = [b for b in assistant["content"] if b["type"] == "tool_use"][0]
     tool_result_msg = next(
@@ -337,7 +356,7 @@ def main():
     test_neutralize_history_passthrough_for_neutral()
     test_neutralize_history_migrates_openai_native()
     test_neutralize_history_migrates_anthropic_native()
-    test_ask_llm_stores_neutral_log()
+    test_agent_loop_stores_neutral_log()
     test_ongoing_conversation_picked_up_by_other_model()
     print("\nALL neutral-context tests passed.")
 

@@ -94,7 +94,7 @@ class ScriptedLLM:
 
 
 def _make_client(root: Path) -> Ludvart:
-    """A Ludvart with a real panel, used as the observable in both legs."""
+    """A Ludvart with a real panel, used as the observable."""
     os.environ["LUDVART_SESSIONS_DIR"] = str(root)
     r = Ludvart(["true"])
     r._panel = AiPanel(cols=80, height=8, provider="fake")
@@ -112,17 +112,8 @@ def _pipe_pair():
     return client, backend
 
 
-def run_local(root: Path, pcts) -> tuple[Ludvart, ScriptedLLM, str]:
-    """Drive one ask through the in-process loop; return the client and reply."""
-    r = _make_client(root)
-    llm = ScriptedLLM(pcts)
-    r.llm = llm
-    reply = r._ask_llm("do a multi-step task")
-    return r, llm, reply
-
-
 def run_backend(root: Path, pcts) -> tuple[Ludvart, ScriptedLLM, str]:
-    """Drive the same ask across the real protocol; return the client and reply."""
+    """Drive one ask across the real protocol; return the client and reply."""
     r = _make_client(root)
     llm = ScriptedLLM(pcts)
     client_ch, backend_ch = _pipe_pair()
@@ -140,50 +131,42 @@ def run_backend(root: Path, pcts) -> tuple[Ludvart, ScriptedLLM, str]:
     return r, llm, reply
 
 
-#: The two implementations of the agent-loop contract, run by every test below.
-MODES = [("local", run_local), ("backend", run_backend)]
-
-
-@pytest.mark.parametrize("mode,run", MODES, ids=[m for m, _ in MODES])
-def test_parity_context_badge_is_updated(tmp_path: Path, mode, run):
-    """A turn's reported usage must reach the panel badge in both modes."""
-    r, _llm, reply = run(tmp_path, [42.0])
+def test_context_badge_is_updated(tmp_path: Path):
+    """A turn's reported usage must reach the panel badge."""
+    r, _llm, reply = run_backend(tmp_path, [42.0])
     assert reply == "final answer", reply
-    assert r._panel.context_pct == 42.0, (mode, r._panel.context_pct)
-    assert r._panel._prompt_prefix() == "[42%] ", (mode, r._panel._prompt_prefix())
+    assert r._panel.context_pct == 42.0, r._panel.context_pct
+    assert r._panel._prompt_prefix() == "[42%] ", r._panel._prompt_prefix()
 
 
-@pytest.mark.parametrize("mode,run", MODES, ids=[m for m, _ in MODES])
-def test_parity_compacts_when_over_threshold(tmp_path: Path, mode, run):
-    """Crossing the threshold mid-ask must compact and mark it, in both modes."""
-    r, llm, reply = run(tmp_path, [30.0, 60.0, 92.0, 40.0])
+def test_compacts_when_over_threshold(tmp_path: Path):
+    """Crossing the threshold mid-ask must compact and mark it in the panel."""
+    r, llm, reply = run_backend(tmp_path, [30.0, 60.0, 92.0, 40.0])
     assert reply == "final answer", reply
-    assert llm.summarize_calls >= 1, (mode, llm.summarize_calls)
+    assert llm.summarize_calls >= 1, llm.summarize_calls
     kinds = [k for k, _ in r._panel.messages]
-    assert "summary" in kinds, (mode, kinds)
+    assert "summary" in kinds, kinds
 
 
-@pytest.mark.parametrize("mode,run", MODES, ids=[m for m, _ in MODES])
-def test_parity_no_compaction_under_threshold(tmp_path: Path, mode, run):
-    """A comfortable conversation must not be compacted in either mode."""
-    r, llm, reply = run(tmp_path, [20.0, 30.0, 25.0])
+def test_no_compaction_under_threshold(tmp_path: Path):
+    """A comfortable conversation must not be compacted."""
+    r, llm, reply = run_backend(tmp_path, [20.0, 30.0, 25.0])
     assert reply == "final answer", reply
-    assert llm.summarize_calls == 0, (mode, llm.summarize_calls)
+    assert llm.summarize_calls == 0, llm.summarize_calls
     kinds = [k for k, _ in r._panel.messages]
-    assert "summary" not in kinds, (mode, kinds)
+    assert "summary" not in kinds, kinds
 
 
-@pytest.mark.parametrize("mode,run", MODES, ids=[m for m, _ in MODES])
-def test_parity_activity_labels_reach_the_panel(tmp_path: Path, mode, run):
-    """The spinner label must track the loop's phases in both modes.
+def test_activity_labels_reach_the_panel(tmp_path: Path):
+    """The spinner label must track the loop's phases.
 
     The elapsed counter itself is timed on the client, so what matters here is
     that each phase (re)starts a waiting period the client can time.
     """
-    r, _llm, _reply = run(tmp_path, [30.0, 40.0])
-    assert r._panel.activity, mode
+    r, _llm, _reply = run_backend(tmp_path, [30.0, 40.0])
+    assert r._panel.activity
     # A tool step was announced, so the client saw a fresh waiting phase.
-    assert r._wait_since is not None or r._panel.activity_elapsed is None, mode
+    assert r._wait_since is not None or r._panel.activity_elapsed is None
 
 
 def test_backend_compaction_reseeds_the_model_context(tmp_path: Path):
@@ -220,19 +203,17 @@ def test_backend_compaction_reseeds_the_model_context(tmp_path: Path):
 
 
 def main():
-    for name, run in MODES:
-        for test in (
-            test_parity_context_badge_is_updated,
-            test_parity_compacts_when_over_threshold,
-            test_parity_no_compaction_under_threshold,
-            test_parity_activity_labels_reach_the_panel,
-        ):
-            with tempfile.TemporaryDirectory() as d:
-                test(Path(d), name, run)
-            print(f"{test.__name__} [{name}]: OK")
-    with tempfile.TemporaryDirectory() as d:
-        test_backend_compaction_reseeds_the_model_context(Path(d))
-    print("\nALL local/backend parity tests passed.")
+    for test in (
+        test_context_badge_is_updated,
+        test_compacts_when_over_threshold,
+        test_no_compaction_under_threshold,
+        test_activity_labels_reach_the_panel,
+        test_backend_compaction_reseeds_the_model_context,
+    ):
+        with tempfile.TemporaryDirectory() as d:
+            test(Path(d))
+        print(f"{test.__name__}: OK")
+    print("\nALL backend loop wiring tests passed.")
 
 
 if __name__ == "__main__":

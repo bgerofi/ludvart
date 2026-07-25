@@ -45,8 +45,19 @@ def main():
         m, stream.feed, lambda: "Thinking" not in screen_text(screen), 90, settle=1.0
     )
     show(screen, "reply to 'What tools can you invoke?'")
-    panel = screen_text(screen)
     checks.add("the turn finished", done)
+    # A tool listing is easily longer than the panel, so page back through the
+    # whole reply instead of only looking at what happens to be on screen.
+    panel = screen_text(screen)
+    seen = [panel]
+    for _ in range(12):
+        os.write(m, b"\x1b[5~")  # PageUp
+        wait_for(m, stream.feed, lambda: False, 0.5, settle=0.2)
+        page = screen_text(screen)
+        if page == seen[-1]:
+            break
+        seen.append(page)
+    panel = "\n".join(seen)
     # If the tool specs never reached the model it cannot name them.
     checks.add(
         "the model names inject_input among its tools",
