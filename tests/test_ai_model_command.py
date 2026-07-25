@@ -285,20 +285,31 @@ def test_guided_add_cancel():
 
 
 def test_guided_add_copilot_backend_mode():
-    """In backend mode the Copilot slug is collected and forwarded (not rejected)."""
+    """In backend mode the Copilot list is fetched from the backend to pick from."""
     _install_fakes()
     r = _make_ludvart([_reg(model="a", active=True)])
-    r._backend_client = object()  # truthy -> backend mode
+
+    class _BC:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, line, host, payload=None):
+            self.requests.append(line)
+            return {"copilot_models": ["gpt-4o", "claude-opus-4.8"], "ready": True}
+
+    r._backend_client = _BC()
     captured = {}
     r._forward_command_to_backend = lambda line, payload=None: captured.update(
         {"line": line, "payload": payload}
     )
     r._cmd_model(["add"])
     r._feed_model_add("gh-sub")  # service
-    r._feed_model_add("5")  # GitHub Copilot -> backend collects slug
+    r._feed_model_add("5")  # GitHub Copilot -> backend supplies the pick-list
+    assert r._backend_client.requests == ["model copilot-models"]
     assert r._model_add["step"] == "copilot_model"
-    assert "slug" in _systems(r)[-1].lower()
-    r._feed_model_add("claude-opus-4.8")
+    joined = "\n".join(_systems(r))
+    assert "1) gpt-4o" in joined and "2) claude-opus-4.8" in joined
+    r._feed_model_add("2")  # pick by number -> resolves to the slug
     assert r._model_add is None
     assert captured["line"] == "model add"
     assert captured["payload"]["provider"] == "copilot"

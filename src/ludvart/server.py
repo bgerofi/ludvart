@@ -233,25 +233,28 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
     payload = msg.get("payload") if isinstance(msg, dict) else None
     parts = line.split()
     cmd = parts[0] if parts else ""
+    result = None
     if cmd == "model":
-        _handle_model(parts[1:], manager, core, channel, emit, payload)
+        result = _handle_model(parts[1:], manager, core, channel, emit, payload)
     elif cmd == "sessions":
         _handle_sessions(parts[1:], core, channel, emit)
     else:
         emit(f"[ludvart] command not supported in backend mode: /{cmd}")
-    channel.send(message(MsgType.REPLY, text=""))
+    channel.send(message(MsgType.REPLY, text="", payload=result))
 
 
-def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None) -> None:
+def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None):
     if manager is None:
         emit("Model management is unavailable on this backend.")
-        return
+        return None
     sub = args[0] if args else "list"
     if sub == "list":
         emit("Registered models (backend):")
         for descr in manager.describe():
             emit(descr)
         emit("Use /model use <n>|<model>, add, or remove <n>|<model>.")
+    elif sub == "copilot-models":
+        return _copilot_model_choices()
     elif sub == "use":
         if len(args) < 2:
             emit("Usage: /model use <n>|<model>")
@@ -269,6 +272,24 @@ def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None
             _do_model_add(payload, manager, channel, emit)
     else:
         emit(f"Supported: list, use, add, remove (got {sub!r}).")
+    return None
+
+
+def _copilot_model_choices() -> dict:
+    """List the Copilot models available to this backend's authorization.
+
+    The backend host owns the Copilot credentials and gateway, so the client's
+    guided ``/model add`` flow asks us for the menu instead of listing locally.
+    """
+    from .gateway import (
+        copilot_authenticated,
+        list_copilot_models,
+        litellm_available,
+    )
+
+    if not (litellm_available() and copilot_authenticated()):
+        return {"copilot_models": [], "ready": False}
+    return {"copilot_models": list(list_copilot_models()), "ready": True}
 
 
 def _do_model_remove(token: str, manager, emit) -> None:

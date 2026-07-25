@@ -290,6 +290,37 @@ def test_model_remove_command_over_backend():
     print("/model remove unregisters on the backend: OK")
 
 
+def test_model_copilot_models_query_over_backend():
+    from ludvart import server
+
+    orig = server._copilot_model_choices
+    server._copilot_model_choices = lambda: {
+        "copilot_models": ["gpt-4o", "claude-opus-4.8"],
+        "ready": True,
+    }
+    try:
+        manager = _FakeManager()
+        client_ch, backend_ch = _pipe_pair()
+        t = threading.Thread(
+            target=lambda: serve(backend_ch, manager=manager), daemon=True
+        )
+        t.start()
+        client = BackendClient(client_ch)
+        host = RecordingHost()
+        assert client_ch.recv()["type"] == "hello"
+        result = client.request("model copilot-models", host)
+        client_ch.close()
+        t.join(timeout=2)
+        backend_ch.close()
+    finally:
+        server._copilot_model_choices = orig
+    assert result == {
+        "copilot_models": ["gpt-4o", "claude-opus-4.8"],
+        "ready": True,
+    }, result
+    print("/model copilot-models query returns the backend list: OK")
+
+
 def main():
     test_loopback_turn_with_client_tool()
     test_loopback_plain_turn_without_tools()
@@ -299,6 +330,7 @@ def main():
     test_model_use_command_switches_backend_model()
     test_model_add_command_over_backend()
     test_model_remove_command_over_backend()
+    test_model_copilot_models_query_over_backend()
     print("\nALL backend RPC tests passed.")
 
 

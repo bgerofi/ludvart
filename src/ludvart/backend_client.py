@@ -162,7 +162,7 @@ class BackendClient:
             self._channel.send(
                 message(MsgType.SUBMIT, text=question, snapshot=snapshot)
             )
-            return self._pump(host)
+            return self._pump(host).get("text", "")
 
         return self._run(attempt, host)
 
@@ -176,11 +176,25 @@ class BackendClient:
             self._channel.send(
                 message(MsgType.COMMAND, command=line, payload=payload)
             )
-            return self._pump(host)
+            return self._pump(host).get("text", "")
 
         self._run(attempt, host)
 
-    def _run(self, attempt: Callable[[], str], host: TerminalHost) -> str:
+    def request(self, line: str, host: TerminalHost, payload=None) -> dict:
+        """Forward a command and return its terminating ``REPLY`` payload.
+
+        Like :meth:`command`, but for queries whose answer is structured data
+        (e.g. the backend's Copilot model list) rather than rendered lines.
+        """
+        def attempt() -> dict:
+            self._channel.send(
+                message(MsgType.COMMAND, command=line, payload=payload)
+            )
+            return self._pump(host).get("payload") or {}
+
+        return self._run(attempt, host)
+
+    def _run(self, attempt: Callable[[], object], host: TerminalHost):
         """Run ``attempt``; on a dropped connection, reconnect once and retry."""
         try:
             return attempt()
@@ -193,15 +207,19 @@ class BackendClient:
             )
             return attempt()
 
-    def _pump(self, host: TerminalHost) -> str:
-        """Service backend frames until the turn/command ends with a ``REPLY``."""
+    def _pump(self, host: TerminalHost) -> dict:
+        """Service backend frames until the turn/command ends with a ``REPLY``.
+
+        Returns the terminating ``REPLY`` frame so callers can read its ``text``
+        and/or structured ``payload``.
+        """
         while True:
             msg = self._channel.recv()
             if msg is None:
                 raise ConnectionError("backend disconnected during a turn")
             kind = msg_type(msg)
             if kind == MsgType.REPLY:
-                return msg.get("text", "")
+                return msg
             self._handle(msg, host)
 
     def _handle(self, msg: dict, host: TerminalHost) -> None:

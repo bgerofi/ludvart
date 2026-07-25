@@ -1891,6 +1891,19 @@ class Ludvart:
         panel.add_system(f"Choice [1-{len(PROVIDER_MENU)}]:")
         self._model_add["step"] = "provider"
 
+    def _show_copilot_choices(self, choices: list) -> None:
+        """Render the Copilot model pick-list (or a slug prompt if empty)."""
+        panel = self._panel
+        if panel is None:
+            return
+        if choices:
+            panel.add_system("Models available to your GitHub Copilot account:")
+            for i, slug in enumerate(choices, 1):
+                panel.add_system(f"  {i}) {slug}")
+            panel.add_system(f"Choice [1-{len(choices)}] or type a model slug:")
+        else:
+            panel.add_system("Copilot model slug (e.g. gpt-4o, claude-opus-4.8):")
+
     def _feed_model_add(self, line: str) -> None:
         """Advance the guided ``/model add`` flow with one typed answer."""
         panel = self._panel
@@ -1993,12 +2006,19 @@ class Ludvart:
         if provider == "copilot":
             if self._backend_client is not None:
                 # The backend host owns Copilot authorization and the gateway,
-                # so it verifies the slug; just collect it here (no local list).
+                # so ask it for the subscription's model list to pick from --
+                # same experience as local mode.
                 self._model_add["step"] = "copilot_model"
-                data["copilot_choices"] = []
-                panel.add_system(
-                    "Copilot model slug (e.g. gpt-4o, claude-opus-4.8):"
-                )
+                host = _ClientTerminalHost(self)
+                try:
+                    reply = self._backend_client.request(
+                        "model copilot-models", host
+                    )
+                except (ConnectionError, OSError):
+                    reply = {}
+                choices = list(reply.get("copilot_models") or [])
+                data["copilot_choices"] = choices
+                self._show_copilot_choices(choices)
                 return
             from .gateway import (
                 copilot_authenticated,
@@ -2016,17 +2036,7 @@ class Ludvart:
             self._model_add["step"] = "copilot_model"
             choices = list_copilot_models()
             data["copilot_choices"] = choices
-            if choices:
-                panel.add_system("Models available to your GitHub Copilot account:")
-                for i, slug in enumerate(choices, 1):
-                    panel.add_system(f"  {i}) {slug}")
-                panel.add_system(
-                    f"Choice [1-{len(choices)}] or type a model slug:"
-                )
-            else:
-                panel.add_system(
-                    "Copilot model slug (e.g. gpt-4o, claude-opus-4.8):"
-                )
+            self._show_copilot_choices(choices)
             return
         data["default_url"] = default_url
         self._model_add["step"] = "url"
