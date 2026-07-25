@@ -218,20 +218,23 @@ def _client_label(llm: LLMClient) -> str:
     return f"{getattr(llm, 'name', 'llm')}:{getattr(llm, 'model', 'model')}"
 
 
-def _handle_command(line: str, manager, core, channel: FrameChannel) -> None:
+def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
     """Run a forwarded slash command (``/model`` or ``/sessions``) on the backend.
 
     Emits result lines as ``PANEL_UPDATE`` system frames, applies the effect
-    (switch model, load/new session), and always sends a terminating ``REPLY``
-    so the client's command call returns.
+    (switch/add/remove model, load/new session), and always sends a terminating
+    ``REPLY`` so the client's command call returns. ``msg`` is the raw COMMAND
+    frame; its ``payload`` carries structured data (e.g. a new registration).
     """
     def emit(text: str) -> None:
         channel.send(message(MsgType.PANEL_UPDATE, kind="system", text=text))
 
+    line = msg.get("command", "") if isinstance(msg, dict) else str(msg)
+    payload = msg.get("payload") if isinstance(msg, dict) else None
     parts = line.split()
     cmd = parts[0] if parts else ""
     if cmd == "model":
-        _handle_model(parts[1:], manager, core, channel, emit)
+        _handle_model(parts[1:], manager, core, channel, emit, payload)
     elif cmd == "sessions":
         _handle_sessions(parts[1:], core, channel, emit)
     else:
@@ -239,7 +242,7 @@ def _handle_command(line: str, manager, core, channel: FrameChannel) -> None:
     channel.send(message(MsgType.REPLY, text=""))
 
 
-def _handle_model(args, manager, core, channel: FrameChannel, emit) -> None:
+def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None) -> None:
     if manager is None:
         emit("Model management is unavailable on this backend.")
         return
@@ -248,14 +251,43 @@ def _handle_model(args, manager, core, channel: FrameChannel, emit) -> None:
         emit("Registered models (backend):")
         for descr in manager.describe():
             emit(descr)
-        emit("Use /model use <n>|<model> to switch.")
+        emit("Use /model use <n>|<model>, add, or remove <n>|<model>.")
     elif sub == "use":
         if len(args) < 2:
             emit("Usage: /model use <n>|<model>")
         else:
             _do_model_use(args[1], manager, core, channel, emit)
+    elif sub == "remove":
+        if len(args) < 2:
+            emit("Usage: /model remove <n>|<model>")
+        else:
+            _do_model_remove(args[1], manager, emit)
+    elif sub == "add":
+        if not payload:
+            emit("Model add is started from the client's guided prompts.")
+        else:
+            _do_model_add(payload, manager, channel, emit)
     else:
-        emit(f"Only 'list' and 'use' are supported in backend mode (got {sub!r}).")
+        emit(f"Supported: list, use, add, remove (got {sub!r}).")
+
+
+def _do_model_remove(token: str, manager, emit) -> None:
+    from .models import find_registration
+
+    idx = find_registration(manager.models, token)
+    if idx is None:
+        emit(f"No model matches {token!r}. See /model list.")
+        return
+    _ok, msg = manager.remove(idx)
+    emit(msg)
+
+
+def _do_model_add(reg, manager, channel: FrameChannel, emit) -> None:
+    def status(note: str) -> None:
+        channel.send(message(MsgType.PANEL_UPDATE, kind="activity", label=note))
+
+    _ok, msg = manager.add(reg, status=status)
+    emit(msg)
 
 
 def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
@@ -465,7 +497,7 @@ def serve(
             channel.send(message(MsgType.REPLY, text=reply))
         elif kind == MsgType.COMMAND:
             try:
-                _handle_command(msg.get("command", ""), manager, core, channel)
+                _handle_command(msg, manager, core, channel)
             except ConnectionError:
                 return
         # Other client message kinds are ignored in the prototype.

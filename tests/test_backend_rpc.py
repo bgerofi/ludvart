@@ -186,6 +186,8 @@ class _FakeManager:
         self.available = [True, True]
         self.client = _FakeBackendLLM()
         self.used = []
+        self.added = []
+        self.removed = []
 
     def active_index(self):
         for i, m in enumerate(self.models):
@@ -208,8 +210,22 @@ class _FakeManager:
         self.client = _FakeBackendLLM()
         return True, f"Now using model {index + 1}."
 
+    def add(self, reg, *, status=None):
+        if status:
+            status("verifying new model")
+        self.models.append(dict(reg))
+        self.available.append(True)
+        self.added.append(dict(reg))
+        return True, f"Added {reg['provider']}:{reg['model']} (verified)."
 
-def _run_command(manager, command_line):
+    def remove(self, index):
+        reg = self.models.pop(index)
+        self.available.pop(index)
+        self.removed.append(index)
+        return True, f"Removed {reg['provider']}:{reg['model']}."
+
+
+def _run_command(manager, command_line, payload=None):
     """Drive one /model command over a loopback and collect the host output."""
     client_ch, backend_ch = _pipe_pair()
     t = threading.Thread(
@@ -219,7 +235,7 @@ def _run_command(manager, command_line):
     client = BackendClient(client_ch)
     host = RecordingHost()
     assert client_ch.recv()["type"] == "hello"
-    client.command(command_line, host)
+    client.command(command_line, host, payload=payload)
     client_ch.close()
     t.join(timeout=2)
     backend_ch.close()
@@ -247,6 +263,33 @@ def test_model_use_command_switches_backend_model():
     print("/model use switches the backend active model and label: OK")
 
 
+def test_model_add_command_over_backend():
+    manager = _FakeManager()
+    reg = {
+        "provider": "openai",
+        "api_url": "https://api.openai.com/v1",
+        "api_key": "sk-secret",
+        "model": "gpt-new",
+        "context_window": 0,
+        "active": False,
+    }
+    host = _run_command(manager, "model add", payload=reg)
+    assert len(manager.added) == 1, manager.added
+    assert manager.added[0]["model"] == "gpt-new"
+    assert manager.added[0]["api_key"] == "sk-secret"
+    assert any("Added" in s for s in host.systems), host.systems
+    print("/model add verifies and registers on the backend: OK")
+
+
+def test_model_remove_command_over_backend():
+    manager = _FakeManager()
+    host = _run_command(manager, "model remove 2")
+    assert manager.removed == [1], manager.removed  # 1-based "2" -> index 1
+    assert len(manager.models) == 1
+    assert any("Removed" in s for s in host.systems), host.systems
+    print("/model remove unregisters on the backend: OK")
+
+
 def main():
     test_loopback_turn_with_client_tool()
     test_loopback_plain_turn_without_tools()
@@ -254,6 +297,8 @@ def main():
     test_hello_reports_model_label_and_verification()
     test_model_list_command_over_backend()
     test_model_use_command_switches_backend_model()
+    test_model_add_command_over_backend()
+    test_model_remove_command_over_backend()
     print("\nALL backend RPC tests passed.")
 
 

@@ -166,10 +166,16 @@ class BackendClient:
 
         return self._run(attempt, host)
 
-    def command(self, line: str, host: TerminalHost) -> None:
-        """Forward a slash command and render its output (``line`` has no '/')."""
+    def command(self, line: str, host: TerminalHost, payload=None) -> None:
+        """Forward a slash command and render its output (``line`` has no '/').
+
+        ``payload`` carries structured data for commands that need it (e.g. the
+        new registration for ``model add``).
+        """
         def attempt() -> str:
-            self._channel.send(message(MsgType.COMMAND, command=line))
+            self._channel.send(
+                message(MsgType.COMMAND, command=line, payload=payload)
+            )
             return self._pump(host)
 
         self._run(attempt, host)

@@ -713,17 +713,19 @@ class Ludvart:
         snapshot = self.snapshot_text()
         return self._backend_client.ask(question, snapshot, host=host)
 
-    def _forward_command_to_backend(self, command_line: str) -> None:
+    def _forward_command_to_backend(self, command_line: str, payload=None) -> None:
         """Forward a slash command (without its '/') to the backend on a worker.
 
         Runs on the panel's background action thread because a backend
-        ``/model use`` builds and verifies a model (and may launch a gateway),
-        which can block. Result lines are streamed back via the host adapter.
+        ``/model use|add`` builds and verifies a model (and may launch a
+        gateway), which can block. ``payload`` carries structured data (e.g. a
+        new registration for ``model add``). Result lines are streamed back via
+        the host adapter.
         """
         host = _ClientTerminalHost(self)
 
         def worker() -> str:
-            self._backend_client.command(command_line, host)
+            self._backend_client.command(command_line, host, payload=payload)
             return ""
 
         self._start_action(worker, activity="Working")
@@ -1414,9 +1416,16 @@ class Ludvart:
         cmd = parts[0] if parts else ""
         args = parts[1:]
         # In backend (split) mode the registry and sessions live on the backend,
-        # so model management and session commands are forwarded there rather
-        # than handled locally.
-        if self._backend_client is not None and cmd in ("model", "sessions"):
+        # so model management and session commands are forwarded there. ``/model
+        # add`` is the exception: its guided prompts run locally (on the panel)
+        # and only the finished registration is sent to the backend to verify.
+        if self._backend_client is not None and cmd == "model":
+            if (args[0] if args else "list") == "add":
+                self._model_add_start()
+            else:
+                self._forward_command_to_backend(line[1:])
+            return
+        if self._backend_client is not None and cmd == "sessions":
             self._forward_command_to_backend(line[1:])
             return
         if cmd == "sessions":
@@ -1859,7 +1868,9 @@ class Ludvart:
     def _model_add_start(self) -> None:
         """Begin the guided ``/model add`` flow (fields typed in the panel)."""
         panel = self._panel
-        if panel is None or self._models is None:
+        if panel is None:
+            return
+        if self._models is None and self._backend_client is None:
             return
         panel.add_system("Add a model (type 'cancel' at any prompt to abort).")
         panel.add_system("Select the API endpoint type:")
@@ -1964,6 +1975,13 @@ class Ludvart:
         data = self._model_add["data"]
         data["provider"] = provider
         if provider == "copilot":
+            if self._backend_client is not None:
+                self._model_add = None
+                panel.add_system(
+                    "Adding a Copilot model in backend mode isn't supported yet; "
+                    "add it on the backend host with `ludvart` directly."
+                )
+                return
             from .gateway import (
                 copilot_authenticated,
                 list_copilot_models,
@@ -2005,6 +2023,11 @@ class Ludvart:
         self._model_add = None
         if panel is not None:
             panel.masked = False
+        if self._backend_client is not None:
+            # The registry lives on the backend: send the finished registration
+            # over the wire to be verified and stored there.
+            self._forward_command_to_backend("model add", payload=reg)
+            return
         if self._models is None:
             return
         mgr = self._models
