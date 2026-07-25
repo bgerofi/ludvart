@@ -137,12 +137,42 @@ class AgentCore:
         self.transcript = []
         self.history = []
 
+    #: Appended to the most recent user turn at send time only. It is never
+    #: stored in ``self.history``, so it does not accumulate across turns and
+    #: is not written to the persisted session.
+    _TOOL_REMINDER = (
+        "<reminder>If you are operating on a console/terminal, remember to use "
+        "your ludvart helper tools (read, write, append, replace, replace-range, "
+        "structured-patch, search, run) for file and command operations rather "
+        "than improvising ad-hoc shell commands.</reminder>"
+    )
+
+    def _with_reminder(self) -> list[dict]:
+        """Return a shallow copy of the history with the reminder appended.
+
+        Only the last ``user`` message is touched, and only when its content is
+        plain text. The originals in ``self.history`` are left untouched.
+        """
+        out = list(self.history)
+        for i in range(len(out) - 1, -1, -1):
+            msg = out[i]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                patched = dict(msg)
+                patched["content"] = content + "\n" + self._TOOL_REMINDER
+                out[i] = patched
+            break
+        return out
+
     def _build_context(self) -> list[dict]:
         """Render the neutral history into the active provider's message shape."""
+        history = self._with_reminder()
         build = getattr(self.llm, "build_context", None)
         if build is None:
-            return list(self.history)
-        return build(self.history)
+            return history
+        return build(history)
 
     def _run_tool(self, call: ToolCall) -> str:
         """Execute a tool: client tools via the host, backend tools in-process."""

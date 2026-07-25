@@ -189,6 +189,71 @@ def test_neutral_helpers():
     print("neutral_assistant/neutral_tool_result shapes: OK")
 
 
+def test_reminder_appended_to_last_user_turn_only():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("ok")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("first question", "SCREEN")
+
+    sent = llm.seen_messages[0]
+    users = [m for m in sent if m.get("role") == "user"]
+    assert users, "expected a user message in the request"
+    assert AgentCore._TOOL_REMINDER in users[-1]["content"]
+    # The reminder sits after the user request, at the very end of the prompt.
+    assert users[-1]["content"].rstrip().endswith("</reminder>")
+    print("reminder is appended to the last user turn: OK")
+
+
+def test_reminder_not_stored_in_history():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("ok")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("a question", "SCREEN")
+
+    for msg in core.history:
+        content = msg.get("content")
+        if isinstance(content, str):
+            assert AgentCore._TOOL_REMINDER not in content
+    print("reminder never leaks into the persisted history: OK")
+
+
+def test_reminder_does_not_accumulate_across_turns():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("one"), _text_turn("two")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("first", "SCREEN")
+    core.run_turn("second", "SCREEN")
+
+    sent = llm.seen_messages[1]
+    users = [m for m in sent if m.get("role") == "user"]
+    assert len(users) == 2
+    # Only the newest user turn carries the reminder; the older one is clean.
+    assert AgentCore._TOOL_REMINDER not in users[0]["content"]
+    assert AgentCore._TOOL_REMINDER in users[1]["content"]
+    # And exactly once, not stacked up.
+    assert users[1]["content"].count(AgentCore._TOOL_REMINDER) == 1
+    print("reminder does not accumulate across turns: OK")
+
+
+def test_reminder_survives_tool_loop_iterations():
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    llm = ScriptedLLM([_tool_turn("working", call), _text_turn("done")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("do it", "SCREEN")
+
+    # Both model calls in the tool loop carry the reminder on the user turn.
+    assert llm.calls == 2
+    for sent in llm.seen_messages:
+        users = [m for m in sent if m.get("role") == "user"]
+        assert AgentCore._TOOL_REMINDER in users[-1]["content"]
+    print("reminder is present on every tool-loop iteration: OK")
+
+
 def main():
     test_plain_answer_turn()
     test_client_tool_routes_through_host()
@@ -196,6 +261,10 @@ def main():
     test_unknown_backend_tool_reports_gracefully()
     test_transcript_accumulates_for_persistence()
     test_neutral_helpers()
+    test_reminder_appended_to_last_user_turn_only()
+    test_reminder_not_stored_in_history()
+    test_reminder_does_not_accumulate_across_turns()
+    test_reminder_survives_tool_loop_iterations()
     print("\nALL agent core tests passed.")
 
 
