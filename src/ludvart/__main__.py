@@ -374,6 +374,12 @@ def _run_setup_wizard() -> bool:
     sys.stderr.flush()
 
     try:
+        # 0) Service name -- an arbitrary label for who provides access.
+        service = input(
+            "Service name -- who provides access (arbitrary, e.g. 'work', "
+            "'personal'): "
+        ).strip()
+
         # 1) Endpoint type.
         sys.stderr.write("Select the API endpoint type:\n")
         for i, (_name, menu_label, _url) in enumerate(PROVIDER_MENU, 1):
@@ -394,7 +400,7 @@ def _run_setup_wizard() -> bool:
 
         # GitHub Copilot has its own flow (device auth + local gateway).
         if provider == "copilot":
-            return _setup_copilot()
+            return _setup_copilot(service)
 
         # 2) Endpoint URL (Enter accepts the default when there is one).
         url = ""
@@ -427,6 +433,7 @@ def _run_setup_wizard() -> bool:
 
     reg: Registration = {
         "provider": provider,
+        "service": service,
         "api_url": url,
         "api_key": key,
         "model": model,
@@ -444,7 +451,7 @@ def _register_model(reg: Registration) -> str:
     return save_models(models)
 
 
-def _setup_copilot() -> bool:
+def _setup_copilot(service: str = "") -> bool:
     """Set up the GitHub Copilot backend: device-flow auth + registered model.
 
     Walks the user through GitHub's OAuth device flow (paid Copilot subscription
@@ -487,6 +494,7 @@ def _setup_copilot() -> bool:
 
     reg: Registration = {
         "provider": "copilot",
+        "service": service,
         "api_url": "",
         "api_key": "",
         "model": model,

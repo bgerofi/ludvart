@@ -176,7 +176,10 @@ def test_guided_add_flow_direct_provider():
     _install_fakes()
     r = _make_ludvart([_reg(model="a", active=True)])
     r._cmd_model(["add"])
-    assert r._model_add is not None and r._model_add["step"] == "provider"
+    assert r._model_add is not None and r._model_add["step"] == "service"
+    # 0) service name (arbitrary label)
+    r._feed_model_add("work")
+    assert r._model_add["step"] == "provider"
     # 1) provider -> openai
     r._feed_model_add("1")
     assert r._model_add["step"] == "url"
@@ -193,6 +196,7 @@ def test_guided_add_flow_direct_provider():
     assert r._model_add is None
     assert [m["model"] for m in r._models.models] == ["a", "gpt-4o"]
     assert r._models.models[1]["provider"] == "openai"
+    assert r._models.models[1]["service"] == "work"
     assert r._models.models[1]["api_url"] == "https://api.openai.com/v1"
     print("guided add flow (direct provider): OK")
 
@@ -212,6 +216,7 @@ def test_guided_add_copilot_lists_subscription_models():
     try:
         r = _make_ludvart([_reg(model="a", active=True)])
         r._cmd_model(["add"])
+        r._feed_model_add("work")  # service
         r._feed_model_add("5")  # GitHub Copilot
         assert r._model_add["step"] == "copilot_model"
         joined = "\n".join(_systems(r))
@@ -222,6 +227,7 @@ def test_guided_add_copilot_lists_subscription_models():
         assert r._model_add is None
         assert r._models.models[-1]["provider"] == "copilot"
         assert r._models.models[-1]["model"] == "claude-opus-4.8"
+        assert r._models.models[-1]["service"] == "work"
     finally:
         (
             gateway.litellm_available,
@@ -246,6 +252,7 @@ def test_guided_add_copilot_typed_slug_fallback():
     try:
         r = _make_ludvart([_reg(model="a", active=True)])
         r._cmd_model(["add"])
+        r._feed_model_add("")  # service (blank -> falls back to provider:model)
         r._feed_model_add("copilot")  # by name
         assert r._model_add["step"] == "copilot_model"
         assert "model slug" in _systems(r)[-1]
@@ -253,6 +260,7 @@ def test_guided_add_copilot_typed_slug_fallback():
         assert r._model_add is None
         assert r._models.models[-1]["provider"] == "copilot"
         assert r._models.models[-1]["model"] == "gpt-5.3-codex"
+        assert r._models.models[-1]["service"] == ""
     finally:
         (
             gateway.litellm_available,
@@ -266,13 +274,37 @@ def test_guided_add_cancel():
     _install_fakes()
     r = _make_ludvart([_reg(model="a", active=True)])
     r._cmd_model(["add"])
-    r._feed_model_add("1")
+    r._feed_model_add("work")  # service
+    r._feed_model_add("1")  # provider -> openai
     r._feed_model_add("cancel")
     assert r._model_add is None
     assert not r._panel.masked
     assert len(r._models.models) == 1
     assert "cancelled" in _systems(r)[-1].lower()
     print("guided add cancel: OK")
+
+
+def test_guided_add_copilot_backend_mode():
+    """In backend mode the Copilot slug is collected and forwarded (not rejected)."""
+    _install_fakes()
+    r = _make_ludvart([_reg(model="a", active=True)])
+    r._backend_client = object()  # truthy -> backend mode
+    captured = {}
+    r._forward_command_to_backend = lambda line, payload=None: captured.update(
+        {"line": line, "payload": payload}
+    )
+    r._cmd_model(["add"])
+    r._feed_model_add("gh-sub")  # service
+    r._feed_model_add("5")  # GitHub Copilot -> backend collects slug
+    assert r._model_add["step"] == "copilot_model"
+    assert "slug" in _systems(r)[-1].lower()
+    r._feed_model_add("claude-opus-4.8")
+    assert r._model_add is None
+    assert captured["line"] == "model add"
+    assert captured["payload"]["provider"] == "copilot"
+    assert captured["payload"]["model"] == "claude-opus-4.8"
+    assert captured["payload"]["service"] == "gh-sub"
+    print("guided add copilot backend mode: OK")
 
 
 def main():
@@ -286,6 +318,7 @@ def main():
     test_guided_add_flow_direct_provider()
     test_guided_add_copilot_lists_subscription_models()
     test_guided_add_copilot_typed_slug_fallback()
+    test_guided_add_copilot_backend_mode()
     test_guided_add_cancel()
     print("\nALL /model command tests passed.")
 

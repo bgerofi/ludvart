@@ -1873,12 +1873,23 @@ class Ludvart:
         if self._models is None and self._backend_client is None:
             return
         panel.add_system("Add a model (type 'cancel' at any prompt to abort).")
+        panel.add_system(
+            "Service name -- who provides access (arbitrary, e.g. 'work', "
+            "'personal', 'aws-bedrock'):"
+        )
+        self._model_add = {"step": "service", "data": {}}
+        self._render_split()
+
+    def _model_add_show_provider_menu(self) -> None:
+        """Show the endpoint-type menu and advance to the provider step."""
+        panel = self._panel
+        if panel is None:
+            return
         panel.add_system("Select the API endpoint type:")
         for i, (_name, menu_label, _url) in enumerate(PROVIDER_MENU, 1):
             panel.add_system(f"  {i}) {menu_label}")
         panel.add_system(f"Choice [1-{len(PROVIDER_MENU)}]:")
-        self._model_add = {"step": "provider", "data": {}}
-        self._render_split()
+        self._model_add["step"] = "provider"
 
     def _feed_model_add(self, line: str) -> None:
         """Advance the guided ``/model add`` flow with one typed answer."""
@@ -1895,7 +1906,10 @@ class Ludvart:
 
         step = self._model_add["step"]
         data = self._model_add["data"]
-        if step == "provider":
+        if step == "service":
+            data["service"] = answer
+            self._model_add_show_provider_menu()
+        elif step == "provider":
             self._model_add_provider(answer)
         elif step == "url":
             if not answer and not data.get("default_url"):
@@ -1921,6 +1935,7 @@ class Ludvart:
                 self._finish_model_add(
                     {
                         "provider": data["provider"],
+                        "service": data.get("service", ""),
                         "api_url": data.get("api_url", ""),
                         "api_key": data.get("api_key", ""),
                         "model": answer,
@@ -1947,6 +1962,7 @@ class Ludvart:
                 self._finish_model_add(
                     {
                         "provider": "copilot",
+                        "service": data.get("service", ""),
                         "api_url": "",
                         "api_key": "",
                         "model": slug,
@@ -1976,10 +1992,12 @@ class Ludvart:
         data["provider"] = provider
         if provider == "copilot":
             if self._backend_client is not None:
-                self._model_add = None
+                # The backend host owns Copilot authorization and the gateway,
+                # so it verifies the slug; just collect it here (no local list).
+                self._model_add["step"] = "copilot_model"
+                data["copilot_choices"] = []
                 panel.add_system(
-                    "Adding a Copilot model in backend mode isn't supported yet; "
-                    "add it on the backend host with `ludvart` directly."
+                    "Copilot model slug (e.g. gpt-4o, claude-opus-4.8):"
                 )
                 return
             from .gateway import (

@@ -74,8 +74,18 @@ def is_copilot(reg: Registration) -> bool:
 
 
 def label(reg: Registration) -> str:
-    """A short human-readable identifier for a registration (``provider:model``)."""
-    return f"{reg.get('provider', '?')}:{reg.get('model', '?')}"
+    """A short human-readable id for a registration.
+
+    ``service:provider:model`` when a service name is set (the arbitrary access
+    provider entered at registration), else ``provider:model`` for backward
+    compatibility with registrations saved before the field existed.
+    """
+    provider = reg.get("provider", "?")
+    model = reg.get("model", "?")
+    service = reg.get("service") or ""
+    if service:
+        return f"{service}:{provider}:{model}"
+    return f"{provider}:{model}"
 
 
 def _coerce(raw: Any) -> Registration | None:
@@ -95,6 +105,7 @@ def _coerce(raw: Any) -> Registration | None:
         api_mode = "chat"
     return {
         "provider": provider,
+        "service": str(raw.get("service") or ""),
         "api_url": str(raw.get("api_url") or ""),
         "api_key": str(raw.get("api_key") or ""),
         "model": model,
