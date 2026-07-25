@@ -15,6 +15,8 @@ import os
 import threading
 from pathlib import Path
 
+from ludvart.ludvart import Ludvart
+from ludvart.panel import AiPanel
 from ludvart.protocol import FrameChannel
 from ludvart.server import serve
 
@@ -86,6 +88,46 @@ def test_a_turn_is_refused_until_a_model_is_registered(tmp_path: Path):
     print("a turn before setup is refused with an actionable message: OK")
 
 
+def test_startup_opens_the_panel_when_setup_is_needed():
+    """Setup must start on its own, not wait for the user to find the summon key."""
+    r = Ludvart(["true"], backend_needs_setup=True)
+    opened = []
+
+    class _Stop(Exception):
+        pass
+
+    def _open():
+        opened.append(True)
+        raise _Stop  # stop before the select loop; we only care that it opened
+
+    r._open_panel = _open
+    r._master_fd, r._stdin_fd = -1, -1
+    try:
+        r._loop()
+    except _Stop:
+        pass
+    assert opened, "the panel was never opened at startup"
+    print("an empty registry opens the panel at startup: OK")
+
+
+def test_guided_registration_starts_once_and_explains_why():
+    r = Ludvart(["true"], backend_needs_setup=True)
+    r._panel = AiPanel(cols=80, height=8, provider="backend")
+    r._render_split = lambda: None
+    r._backend_client = object()  # non-None: the registration goes to the backend
+
+    r._maybe_start_backend_setup()
+    assert r._model_add is not None and r._model_add["step"] == "service", r._model_add
+    text = " ".join(m[1] for m in r._panel.messages if len(m) > 1)
+    assert "No model is registered on the backend yet." in text, text
+
+    # Re-opening the panel later must not restart the flow.
+    r._model_add = None
+    r._maybe_start_backend_setup()
+    assert r._model_add is None, "registration restarted on a later panel open"
+    print("registration starts once, with an explanation: OK")
+
+
 def main():
     import tempfile
 
@@ -95,6 +137,8 @@ def main():
     ):
         with tempfile.TemporaryDirectory() as d:
             fn(Path(d))
+    test_startup_opens_the_panel_when_setup_is_needed()
+    test_guided_registration_starts_once_and_explains_why()
     print("\nALL OK")
 
 

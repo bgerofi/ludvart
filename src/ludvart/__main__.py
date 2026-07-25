@@ -135,8 +135,7 @@ def _run_with_backend(args, command: list[str]) -> int:
     label = reconnector.label or "backend"
     if reconnector.needs_setup:
         sys.stderr.write(
-            "ludvart: no model registered yet; the panel will walk you "
-            "through it (prefix then 'a').\n"
+            "ludvart: no model registered yet; starting setup...\n"
         )
     elif reconnector.verified:
         sys.stderr.write(f"ludvart: backend model {label}... ok\n")

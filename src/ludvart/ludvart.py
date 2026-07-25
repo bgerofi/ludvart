@@ -634,6 +634,12 @@ class Ludvart:
         master = self._master_fd
         stdin = self._stdin_fd
 
+        # Nothing can be asked of a backend with an empty registry, so collect a
+        # model right away rather than waiting for the user to find the summon
+        # key. Closing the panel drops straight into the normal relay.
+        if self._backend_needs_setup:
+            self._open_panel()
+
         while True:
             if self._resized:
                 self._handle_resize()
