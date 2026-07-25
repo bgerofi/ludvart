@@ -10,7 +10,7 @@ from ludvart.agent_core import (
     neutral_assistant,
     neutral_tool_result,
 )
-from ludvart.llm import LLMClient, ProviderConfig, ToolCall, ToolSpec, Turn
+from ludvart.llm import LLMClient, ProviderConfig, ToolCall, ToolSpec, Turn, Usage
 from ludvart.terminal_host import TerminalHost
 
 
@@ -25,6 +25,7 @@ class RecordingHost(TerminalHost):
         self.infos = []
         self.tool_calls = []
         self.snapshots = 0
+        self.context_pcts = []
 
     def snapshot(self):
         self.snapshots += 1
@@ -42,6 +43,9 @@ class RecordingHost(TerminalHost):
 
     def add_info(self, text):
         self.infos.append(text)
+
+    def set_context_pct(self, pct):
+        self.context_pcts.append(pct)
 
 
 class ScriptedLLM(LLMClient):
@@ -254,6 +258,48 @@ def test_reminder_survives_tool_loop_iterations():
     print("reminder is present on every tool-loop iteration: OK")
 
 
+def test_usage_reported_to_host_for_context_badge():
+    host = RecordingHost()
+    turn = _text_turn("hi")
+    turn.usage = Usage(input_tokens=4000, context_window=10000)
+    llm = ScriptedLLM([turn])
+    core = AgentCore(llm, host, system_prompt="SYS")
+
+    core.run_turn("q", "SCREEN")
+
+    assert host.context_pcts == [40.0], host.context_pcts
+    assert core.last_input_tokens == 4000
+    print("usage is reported to the host for the context badge: OK")
+
+
+def test_usage_reported_on_every_step_of_a_tool_loop():
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    first = _tool_turn("working", call)
+    first.usage = Usage(input_tokens=1000, context_window=10000)
+    second = _text_turn("done")
+    second.usage = Usage(input_tokens=2500, context_window=10000)
+    llm = ScriptedLLM([first, second])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("q", "SCREEN")
+
+    # The badge tracks the growing prompt across the whole agentic turn.
+    assert host.context_pcts == [10.0, 25.0], host.context_pcts
+    print("usage is reported on every step of a tool loop: OK")
+
+
+def test_missing_usage_leaves_the_badge_alone():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("hi")])  # usage=None
+    core = AgentCore(llm, host, system_prompt="SYS")
+
+    core.run_turn("q", "SCREEN")
+
+    assert host.context_pcts == []
+    print("a turn without usage does not touch the badge: OK")
+
+
 def main():
     test_plain_answer_turn()
     test_client_tool_routes_through_host()
@@ -265,6 +311,9 @@ def main():
     test_reminder_not_stored_in_history()
     test_reminder_does_not_accumulate_across_turns()
     test_reminder_survives_tool_loop_iterations()
+    test_usage_reported_to_host_for_context_badge()
+    test_usage_reported_on_every_step_of_a_tool_loop()
+    test_missing_usage_leaves_the_badge_alone()
     print("\nALL agent core tests passed.")
 
 

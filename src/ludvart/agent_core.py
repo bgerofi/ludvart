@@ -78,6 +78,9 @@ class AgentCore:
         self.session = session
         #: Cache of the last `/sessions list`, for index -> id resolution.
         self.session_list: list[dict] = []
+        #: Prompt tokens reported by the most recent model call, so the context
+        #: badge can be recomputed when the active model (window) changes.
+        self.last_input_tokens = 0
 
     def run_turn(self, question: str, snapshot: str) -> str:
         """Run one user turn to completion and return the assistant's reply.
@@ -105,6 +108,7 @@ class AgentCore:
                 on_text=self.host.narrate,
             )
             self.history.append(neutral_assistant(turn))
+            self._report_usage(turn)
             if not turn.tool_calls:
                 self.transcript.append(("ludvart", turn.text))
                 self._persist()
@@ -113,6 +117,14 @@ class AgentCore:
                 self.host.set_activity(f"Calling {call.name}")
                 output = self._run_tool(call)
                 self.history.append(neutral_tool_result(call, output))
+
+    def _report_usage(self, turn) -> None:
+        """Push the prompt's context usage to the host (drives the ``[NN%]`` badge)."""
+        usage = getattr(turn, "usage", None)
+        if usage is None:
+            return
+        self.last_input_tokens = usage.input_tokens
+        self.host.set_context_pct(usage.context_percent())
 
     def _persist(self) -> None:
         """Save the conversation to the backend session store (best effort)."""

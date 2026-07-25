@@ -436,6 +436,24 @@ def _do_model_use(token: str, manager, core, channel: FrameChannel, emit) -> Non
         channel.send(
             message(MsgType.PANEL_UPDATE, kind="model", label=_manager_active_label(manager))
         )
+        # The new model may have a different context window, so re-derive the
+        # badge now instead of leaving a stale percentage until the next turn.
+        channel.send(
+            message(
+                MsgType.PANEL_UPDATE,
+                kind="context",
+                pct=_context_pct_for(core, manager.client),
+            )
+        )
+
+
+def _context_pct_for(core, client) -> float | None:
+    """Percent of ``client``'s window used by the last prompt, or ``None``."""
+    tokens = getattr(core, "last_input_tokens", 0) or 0
+    window = getattr(client, "context_window", 0) or 0
+    if tokens <= 0 or window <= 0:
+        return None
+    return 100.0 * tokens / window
 
 
 def serve(

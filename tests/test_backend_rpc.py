@@ -35,6 +35,7 @@ class RecordingHost(TerminalHost):
         self.systems = []
         self.model_label = None
         self.snapshots = 0
+        self.context_pcts = []
 
     def snapshot(self):
         self.snapshots += 1
@@ -58,6 +59,9 @@ class RecordingHost(TerminalHost):
 
     def set_model(self, label):
         self.model_label = label
+
+    def set_context_pct(self, pct):
+        self.context_pcts.append(pct)
 
 
 def _pipe_pair():
@@ -321,6 +325,37 @@ def test_model_copilot_models_query_over_backend():
     print("/model copilot-models query returns the backend list: OK")
 
 
+def test_context_pct_flows_from_backend_to_client_panel():
+    """A turn's token usage reaches the client host as a context percentage."""
+    from ludvart.llm import Turn, Usage
+
+    class UsageLLM(_FakeBackendLLM):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            return Turn(
+                text="answered",
+                assistant_message={"role": "assistant", "content": "answered"},
+                usage=Usage(input_tokens=3000, context_window=12000),
+            )
+
+    client_ch, backend_ch = _pipe_pair()
+    t = threading.Thread(
+        target=lambda: serve(backend_ch, llm=UsageLLM()), daemon=True
+    )
+    t.start()
+    client = BackendClient(client_ch)
+    host = RecordingHost()
+    assert client_ch.recv()["type"] == "hello"
+
+    reply = client.ask("q", "SNAP", host)
+
+    client_ch.close()
+    t.join(timeout=2)
+    backend_ch.close()
+    assert reply == "answered", reply
+    assert host.context_pcts == [25.0], host.context_pcts
+    print("context usage reaches the client panel over the protocol: OK")
+
+
 def main():
     test_loopback_turn_with_client_tool()
     test_loopback_plain_turn_without_tools()
@@ -331,6 +366,7 @@ def main():
     test_model_add_command_over_backend()
     test_model_remove_command_over_backend()
     test_model_copilot_models_query_over_backend()
+    test_context_pct_flows_from_backend_to_client_panel()
     print("\nALL backend RPC tests passed.")
 
 

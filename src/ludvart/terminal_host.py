@@ -58,6 +58,13 @@ class TerminalHost(ABC):
         """Update the displayed active-model label (e.g. after ``/model use``)."""
         # Default: nothing to display.
 
+    def set_context_pct(self, pct: float | None) -> None:
+        """Update the context-usage badge (percent of the window the prompt used).
+
+        ``None`` hides the badge (window size unknown).
+        """
+        # Default: nothing to display.
+
     def set_transcript(self, messages: list) -> None:
         """Replace the visible transcript (e.g. after ``/sessions load|new``).
 

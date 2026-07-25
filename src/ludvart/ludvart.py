@@ -227,13 +227,23 @@ class _ClientTerminalHost(TerminalHost):
 
     def narrate(self, text: str) -> None:
         panel = self._app._panel
+        # The backend has started streaming this step's answer, so stop showing
+        # the elapsed counter (same as a local streaming turn).
+        self._app._mark_wait_streaming()
         if panel is not None:
             panel.interim = text
 
     def set_activity(self, label: str) -> None:
+        # Each new activity starts a fresh waiting phase. The elapsed seconds are
+        # timed here on the client (wall clock, so they include link latency);
+        # the main loop's _refresh_wait tick advances the counter.
+        self._app._begin_wait(label)
+
+    def set_context_pct(self, pct: float | None) -> None:
+        self._app._panel_context_pct = pct
         panel = self._app._panel
         if panel is not None:
-            panel.activity = label
+            panel.context_pct = pct
 
     def add_info(self, text: str) -> None:
         panel = self._app._panel
@@ -711,7 +721,11 @@ class Ludvart:
         """
         host = _ClientTerminalHost(self)
         snapshot = self.snapshot_text()
-        return self._backend_client.ask(question, snapshot, host=host)
+        try:
+            return self._backend_client.ask(question, snapshot, host=host)
+        finally:
+            # Stop the elapsed-seconds clock the backend's activity frames started.
+            self._end_wait()
 
     def _forward_command_to_backend(self, command_line: str, payload=None) -> None:
         """Forward a slash command (without its '/') to the backend on a worker.
@@ -725,7 +739,10 @@ class Ludvart:
         host = _ClientTerminalHost(self)
 
         def worker() -> str:
-            self._backend_client.command(command_line, host, payload=payload)
+            try:
+                self._backend_client.command(command_line, host, payload=payload)
+            finally:
+                self._end_wait()
             return ""
 
         self._start_action(worker, activity="Working")

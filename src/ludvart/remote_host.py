@@ -67,6 +67,9 @@ class RemoteTerminalHost(TerminalHost):
     def set_activity(self, label: str) -> None:
         self._notify("activity", label=label)
 
+    def set_context_pct(self, pct: float | None) -> None:
+        self._notify("context", pct=pct)
+
     def add_info(self, text: str) -> None:
         self._notify("info", text=text)
 
