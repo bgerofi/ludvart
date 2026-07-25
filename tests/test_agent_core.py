@@ -213,6 +213,8 @@ def test_reminder_names_the_helper_path():
     """The helper is not on PATH, so the reminder has to spell out where it is."""
     assert "~/.ludvart/bin/ludvart_helper" in AgentCore._TOOL_REMINDER
     assert "NOT on PATH" in AgentCore._TOOL_REMINDER
+    # A missing helper has a one-command fix the model cannot run itself.
+    assert "/init_helpers" in AgentCore._TOOL_REMINDER
     print("reminder names the full helper path: OK")
 
 
