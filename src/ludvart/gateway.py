@@ -37,6 +37,29 @@ GATEWAY_HOST = "127.0.0.1"
 #: accepted. ludvart passes this placeholder to its OpenAI-compatible client.
 GATEWAY_API_KEY = "sk-ludvart-local"
 
+#: Base URL of an already-running gateway to reuse instead of spawning one, and
+#: the single model it serves. Both must be set for the reuse to apply.
+#:
+#: A gateway takes tens of seconds to boot and is entirely stateless, so a
+#: process that starts many short-lived ludvart instances back to back (the e2e
+#: suite) can start one gateway up front and hand it to all of them. Whoever
+#: sets these owns the gateway's lifetime; ludvart will not stop it.
+SHARED_GATEWAY_URL_ENV = "LUDVART_GATEWAY_URL"
+SHARED_GATEWAY_MODEL_ENV = "LUDVART_GATEWAY_MODEL"
+
+
+def shared_gateway(model: str) -> str | None:
+    """Base URL of a reusable gateway serving ``model``, or ``None``.
+
+    A gateway proxies exactly one model, so a shared one is only usable by a
+    process that wants that same model; anyone else spawns their own.
+    """
+    url = os.environ.get(SHARED_GATEWAY_URL_ENV, "").strip()
+    served = os.environ.get(SHARED_GATEWAY_MODEL_ENV, "").strip()
+    if url and served == model:
+        return url
+    return None
+
 
 class GatewayError(RuntimeError):
     """Raised when the LiteLLM gateway can't be authenticated or started."""

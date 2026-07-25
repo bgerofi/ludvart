@@ -33,6 +33,7 @@ class RecordingHost(TerminalHost):
         self.activities = []
         self.infos = []
         self.systems = []
+        self.summaries = []
         self.model_label = None
         self.snapshots = 0
         self.context_pcts = []
@@ -56,6 +57,9 @@ class RecordingHost(TerminalHost):
 
     def add_system(self, text):
         self.systems.append(text)
+
+    def add_summary(self, text):
+        self.summaries.append(text)
 
     def set_model(self, label):
         self.model_label = label
@@ -356,6 +360,79 @@ def test_context_pct_flows_from_backend_to_client_panel():
     print("context usage reaches the client panel over the protocol: OK")
 
 
+def test_compact_command_compacts_the_backend_conversation():
+    """`/compact` is forwarded: the conversation and the model both live here."""
+    from ludvart import server
+    from ludvart.llm import Turn
+
+    class SummarizingLLM(_FakeBackendLLM):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            return Turn(
+                text="BRIEF",
+                assistant_message={"role": "assistant", "content": "BRIEF"},
+                usage=None,
+            )
+
+    client_ch, backend_ch = _pipe_pair()
+    core_box = []
+    orig_loop = server._request_loop
+
+    def capture(channel, manager, core):
+        core_box.append(core)
+        core.history = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "c"},
+        ]
+        return orig_loop(channel, manager, core)
+
+    server._request_loop = capture
+    try:
+        t = threading.Thread(
+            target=lambda: serve(backend_ch, llm=SummarizingLLM()), daemon=True
+        )
+        t.start()
+        client = BackendClient(client_ch)
+        host = RecordingHost()
+        assert client_ch.recv()["type"] == "hello"
+
+        client.command("compact", host)
+
+        client_ch.close()
+        t.join(timeout=2)
+        backend_ch.close()
+    finally:
+        server._request_loop = orig_loop
+
+    core = core_box[0]
+    # The backend history was reseeded from the summary...
+    assert len(core.history) == 2, core.history
+    assert "BRIEF" in core.history[0]["content"], core.history
+    # ...and the client was told what happened, plus shown the summary marker.
+    assert any("Compacted 3 messages" in s for s in host.systems), host.systems
+    assert host.summaries == ["BRIEF"], host.summaries
+    print("/compact compacts the backend conversation: OK")
+
+
+def test_compact_command_declines_a_short_conversation():
+    client_ch, backend_ch = _pipe_pair()
+    t = threading.Thread(
+        target=lambda: serve(backend_ch, llm=_FakeBackendLLM()), daemon=True
+    )
+    t.start()
+    client = BackendClient(client_ch)
+    host = RecordingHost()
+    assert client_ch.recv()["type"] == "hello"
+
+    client.command("compact", host)
+
+    client_ch.close()
+    t.join(timeout=2)
+    backend_ch.close()
+    assert any("already compact" in s for s in host.systems), host.systems
+    print("/compact declines a conversation that is already compact: OK")
+
+
 def main():
     test_loopback_turn_with_client_tool()
     test_loopback_plain_turn_without_tools()
@@ -367,6 +444,8 @@ def main():
     test_model_remove_command_over_backend()
     test_model_copilot_models_query_over_backend()
     test_context_pct_flows_from_backend_to_client_panel()
+    test_compact_command_compacts_the_backend_conversation()
+    test_compact_command_declines_a_short_conversation()
     print("\nALL backend RPC tests passed.")
 
 

@@ -206,6 +206,48 @@ def test_missing_cli_raises(tmp, monkeypatch_cli):
     raise AssertionError("expected GatewayError when litellm CLI is missing")
 
 
+def test_shared_gateway_is_reused_instead_of_spawned(monkeypatch):
+    """A pre-started gateway for the same model is used as-is, and not stopped.
+
+    Booting a gateway costs tens of seconds, so a harness that starts many
+    ludvart processes (the e2e suite) starts one up front and exports it.
+    """
+    from ludvart import backend as backend_mod
+    from ludvart.gateway import (
+        SHARED_GATEWAY_MODEL_ENV,
+        SHARED_GATEWAY_URL_ENV,
+        shared_gateway,
+    )
+
+    monkeypatch.setenv(SHARED_GATEWAY_URL_ENV, "http://127.0.0.1:9999")
+    monkeypatch.setenv(SHARED_GATEWAY_MODEL_ENV, "gpt-5.6-terra")
+
+    assert shared_gateway("gpt-5.6-terra") == "http://127.0.0.1:9999"
+    # A gateway proxies exactly one model; a different one must not reuse it.
+    assert shared_gateway("gpt-4o") is None
+
+    def boom(*a, **k):
+        raise AssertionError("a shared gateway was available; none should spawn")
+
+    monkeypatch.setattr(gateway, "CopilotGateway", boom)
+    reg = {
+        "provider": "copilot",
+        "model": "gpt-5.6-terra",
+        "api_mode": "responses",
+        "api_url": "",
+        "api_key": "",
+        "active": True,
+    }
+    built = backend_mod.build_backend(reg)
+
+    assert built.client.config.api_url.startswith("http://127.0.0.1:9999")
+    assert built.client.config.api_mode == "responses"
+    # Not ours to stop: no gateway is attached, so teardown leaves it running.
+    assert built.gateway is None
+    built.stop()
+    print("a shared gateway is reused instead of spawned: OK")
+
+
 def _run():
     orig = gateway._litellm_cli
     tests = [

@@ -19,6 +19,7 @@ from typing import Sequence
 
 from .agent_core import DEFAULT_CLIENT_TOOLS, AgentCore
 from .llm import LLMClient, ProviderConfig, ToolCall, ToolSpec, Turn
+from .prompt import system_prompt
 from .protocol import (
     DEFAULT_MAX_FRAME,
     FrameChannel,
@@ -27,64 +28,34 @@ from .protocol import (
     msg_type,
 )
 from .remote_host import RemoteTerminalHost
-
-#: Compact system prompt used by the split backend prototype. The full,
-#: helper-aware prompt still lives in the monolithic client path.
-_SYSTEM_PROMPT = (
-    "You are ludvart, an assistant embedded in a terminal. Each user message "
-    "carries a <screenContext> snapshot followed by a <userRequest>. Use the "
-    "tools available to you to act in the terminal; keep replies concise and in "
-    "plain ASCII."
-)
+from .tools import builtin_tool_specs
 
 
-def _prototype_tools() -> list[ToolSpec]:
-    """The tool set the split backend advertises (prototype subset)."""
-    return [
-        ToolSpec(
-            name="inject_input",
-            description="Type characters into the user's terminal.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                    "submit": {"type": "boolean"},
-                    "interpret_escapes": {"type": "boolean"},
-                },
-                "required": ["text"],
-            },
-        ),
-        ToolSpec(
-            name="capture_screen_history",
-            description="Read lines from the terminal scrollback history.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "offset": {"type": "integer"},
-                    "length": {"type": "integer"},
-                },
-                "required": ["offset", "length"],
-            },
-        ),
-        ToolSpec(
-            name="b64_encode",
-            description="Base64-encode UTF-8 text.",
-            input_schema={
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-            },
-        ),
-        ToolSpec(
-            name="b64_decode",
-            description="Base64-decode to UTF-8 text.",
-            input_schema={
-                "type": "object",
-                "properties": {"b64": {"type": "string"}},
-                "required": ["b64"],
-            },
-        ),
-    ]
+def _start_mcp():
+    """Discover external MCP tools on the backend host, or return ``None``.
+
+    MCP servers are configured (and launched) where the agent loop runs, so a
+    remote backend uses that host's ``~/.ludvart/mcp.json``. Discovery failures
+    are non-fatal: the agent simply runs with its built-in tools.
+    """
+    from .mcp import McpManager
+
+    mcp = McpManager()
+    if not mcp.config_exists():
+        return None
+    try:
+        mcp.refresh()
+    except Exception:  # noqa: BLE001 - a broken MCP server must not stop serving
+        return None
+    return mcp
+
+
+def _agent_tools(mcp) -> list[ToolSpec]:
+    """The full tool set advertised to the model: built-ins plus MCP tools."""
+    specs = builtin_tool_specs()
+    if mcp is not None:
+        specs += mcp.tool_specs()
+    return specs
 
 
 class _FakeBackendLLM(LLMClient):
@@ -257,9 +228,62 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
         result = _handle_model(parts[1:], manager, core, channel, emit, payload)
     elif cmd == "sessions":
         _handle_sessions(parts[1:], core, channel, emit)
+    elif cmd == "compact":
+        _do_compact(core, channel, emit)
+    elif cmd == "mcp_refresh":
+        _do_mcp_refresh(core, emit)
     else:
         emit(f"[ludvart] command not supported in backend mode: /{cmd}")
     channel.send(message(MsgType.REPLY, text="", payload=result))
+
+
+def _do_compact(core, channel: FrameChannel, emit) -> None:
+    """Run ``/compact``: summarize the conversation on demand.
+
+    Same mechanism as the automatic 80%-full compaction, but triggered by the
+    user. The conversation and the model both live here, so this is where it has
+    to happen; the client only renders the resulting summary marker.
+    """
+    if core.llm is None:
+        emit("No model is registered on the backend; nothing to compact.")
+        return
+    if len(core.history) <= 2:
+        emit("Conversation is already compact.")
+        return
+    before = len(core.history)
+    compacted = core.compact()
+    core.host.set_activity("")  # no turn is running; drop the spinner again
+    if not compacted:
+        emit("Compaction failed; the conversation was left unchanged.")
+        return
+    pct = core.context_pct
+    pct_note = f", context now ~{pct:.0f}%" if pct is not None else ""
+    emit(f"Compacted {before} messages into a summary{pct_note}.")
+
+
+def _do_mcp_refresh(core, emit) -> None:
+    """Run ``/mcp_refresh``: re-read mcp.json and rediscover external tools.
+
+    The servers run on the backend host, so both the config and the child
+    processes belong here. The refreshed tool list is folded back into the
+    system prompt so the model is told what it can actually call.
+    """
+    from .mcp import McpManager
+
+    if core.mcp is None:
+        core.mcp = McpManager()
+    if not core.mcp.config_exists():
+        emit("No ~/.ludvart/mcp.json on the backend host; nothing to refresh.")
+        core.mcp = None
+        return
+    try:
+        report = core.mcp.refresh().report()
+    except Exception as exc:  # noqa: BLE001 - reported to the user
+        emit(f"MCP refresh failed: {exc}")
+        return
+    core.tools = _agent_tools(core.mcp)
+    core.system_prompt = system_prompt(core.tools)
+    emit(report)
 
 
 def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None):
@@ -529,13 +553,16 @@ def serve(
             session = SessionStore()
 
     host = RemoteTerminalHost(channel)
+    mcp = _start_mcp()
+    tools = _agent_tools(mcp)
     core = AgentCore(
         client,
         host,
-        system_prompt=_SYSTEM_PROMPT,
-        tools=_prototype_tools(),
+        system_prompt=system_prompt(tools),
+        tools=tools,
         client_tools=DEFAULT_CLIENT_TOOLS,
         session=session,
+        mcp=mcp,
     )
     channel.send(
         message(
@@ -549,6 +576,14 @@ def serve(
             session_id=getattr(session, "session_id", None),
         )
     )
+    try:
+        _request_loop(channel, manager, core)
+    finally:
+        core.close()
+
+
+def _request_loop(channel: FrameChannel, manager, core: AgentCore) -> None:
+    """Serve requests on ``channel`` until the client disconnects."""
     while True:
         msg = channel.recv()
         if msg is None:
@@ -578,7 +613,7 @@ def serve(
                 _handle_command(msg, manager, core, channel)
             except ConnectionError:
                 return
-        # Other client message kinds are ignored in the prototype.
+        # Other client message kinds are ignored.
 
 
 

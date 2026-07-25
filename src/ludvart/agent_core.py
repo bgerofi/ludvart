@@ -13,16 +13,18 @@ lives behind the host interface.
 
 from __future__ import annotations
 
-import base64
+import re
+import time
 from typing import Sequence
 
+from . import tools as builtin
 from .llm import LLMClient, ToolCall, ToolSpec, Turn
 from .session import SUMMARY_MARKER, SUMMARY_MARKER_END
 from .terminal_host import TerminalHost
 
 #: Tools that must run where the terminal is (the client). Everything else is a
 #: backend tool executed in-process by :meth:`AgentCore._run_tool`.
-DEFAULT_CLIENT_TOOLS = frozenset({"inject_input", "capture_screen_history"})
+DEFAULT_CLIENT_TOOLS = builtin.CLIENT_TOOL_NAMES
 
 
 def neutral_assistant(turn: Turn) -> dict:
@@ -70,6 +72,7 @@ class AgentCore:
         client_tools: frozenset[str] = DEFAULT_CLIENT_TOOLS,
         max_tokens: int = 8192,
         session=None,
+        mcp=None,
     ) -> None:
         self.llm = llm
         self.host = host
@@ -77,6 +80,10 @@ class AgentCore:
         self.tools = list(tools) if tools else []
         self.client_tools = client_tools
         self.max_tokens = max_tokens
+        #: External MCP servers discovered on this host (None when unused).
+        self.mcp = mcp
+        #: Scratch space for tools that write files (e.g. ``fetch_url``).
+        self.scratch = builtin.ScratchDir()
         #: The running provider-neutral conversation log.
         self.history: list[dict] = []
         #: Human-readable transcript pairs, for session persistence.
@@ -100,8 +107,14 @@ class AgentCore:
         model returns a plain-text answer.
         """
         self.transcript.append(("you", question))
+        # Stamp each snapshot with a UTC timestamp (nanosecond precision) so it
+        # can be addressed later. When older snapshots are stripped from the
+        # model-facing context (see :meth:`_strip_old_screenshots`) the
+        # timestamp survives in the breadcrumb, letting the model fetch the full
+        # snapshot back via the ``get_past_snapshot`` tool.
+        snapshot_ts = self._utc_ns_timestamp()
         user_content = (
-            "<screenContext>\n"
+            f'<screenContext ts="{snapshot_ts}">\n'
             f"{snapshot}\n"
             "</screenContext>\n"
             f"<userRequest>\n{question}\n</userRequest>"
@@ -157,6 +170,12 @@ class AgentCore:
         if self.context_pct is None or self.context_pct < self.CONTEXT_COMPACT_PCT:
             return False
         return self._compact_history() is not None
+
+    def compact(self) -> str | None:
+        """Compact now regardless of how full the window is (the ``/compact``
+        command). Returns the summary, or ``None`` if the request failed.
+        """
+        return self._compact_history()
 
     def _compact_history(self) -> str | None:
         """Summarize the conversation and reseed the context from that summary.
@@ -253,6 +272,13 @@ class AgentCore:
         self.transcript = []
         self.history = []
 
+    def close(self) -> None:
+        """Release resources owned by the loop (scratch files, MCP servers)."""
+        self.scratch.cleanup()
+        if self.mcp is not None:
+            self.mcp.close()
+            self.mcp = None
+
     #: Appended to the most recent user turn at send time only. It is never
     #: stored in ``self.history``, so it does not accumulate across turns and
     #: is not written to the persisted session.
@@ -263,13 +289,13 @@ class AgentCore:
         "than improvising ad-hoc shell commands.</reminder>"
     )
 
-    def _with_reminder(self) -> list[dict]:
-        """Return a shallow copy of the history with the reminder appended.
+    def _with_reminder(self, history: list[dict]) -> list[dict]:
+        """Return a shallow copy of ``history`` with the reminder appended.
 
         Only the last ``user`` message is touched, and only when its content is
-        plain text. The originals in ``self.history`` are left untouched.
+        plain text. The originals in :attr:`history` are left untouched.
         """
-        out = list(self.history)
+        out = list(history)
         for i in range(len(out) - 1, -1, -1):
             msg = out[i]
             if msg.get("role") != "user":
@@ -283,8 +309,13 @@ class AgentCore:
         return out
 
     def _build_context(self) -> list[dict]:
-        """Render the neutral history into the active provider's message shape."""
-        history = self._with_reminder()
+        """Render the neutral history into the active provider's message shape.
+
+        Superseded screen snapshots are stripped first (see
+        :meth:`_strip_old_screenshots`) so only the newest ``<screenContext>``
+        is sent to the model.
+        """
+        history = self._with_reminder(self._strip_old_screenshots(self.history))
         build = getattr(self.llm, "build_context", None)
         if build is None:
             return history
@@ -294,25 +325,181 @@ class AgentCore:
         """Execute a tool: client tools via the host, backend tools in-process."""
         if call.name in self.client_tools:
             return self.host.run_terminal_tool(call.name, dict(call.input))
+        if call.name == "get_past_snapshot":
+            return self._tool_get_past_snapshot(call.input)
         if call.name == "b64_encode":
-            return self._tool_b64_encode(call.input)
+            return builtin.b64_encode(call.input)
         if call.name == "b64_decode":
-            return self._tool_b64_decode(call.input)
-        return f"[ludvart] backend tool not available in split mode: {call.name}"
+            return builtin.b64_decode(call.input)
+        if call.name == "web_search":
+            return builtin.web_search(call.input)
+        if call.name == "fetch_url":
+            return builtin.fetch_url(call.input, self.scratch)
+        if call.name == "read_local_file":
+            return builtin.read_local_file(call.input)
+        if call.name == "get_local_file_info":
+            return builtin.get_local_file_info(call.input)
+        if self.mcp is not None and self.mcp.is_mcp_tool(call.name):
+            return self.mcp.call_tool(call.name, dict(call.input))
+        return f"[ludvart] unknown tool: {call.name}"
+
+    # -- past screen snapshots ------------------------------------------------
+
+    #: Breadcrumb that replaces the screen snapshot of superseded user turns in
+    #: the model-facing context. Only the most recent turn keeps its full
+    #: <screenContext>; older ones are collapsed to a breadcrumb line to save
+    #: context (the live screen is re-fetchable via tools, and the exact past
+    #: snapshot via get_past_snapshot(timestamp)). The stored log is untouched.
+    #: This bare form is only a fallback for a snapshot missing its timestamp;
+    #: the normal breadcrumb carries the ts (see :meth:`_screen_breadcrumb`).
+    _SCREEN_PLACEHOLDER = "[screen omitted; superseded by a newer snapshot]"
+
+    #: Matches a ``<screenContext>`` open tag with any (or no) attributes.
+    _SCREEN_OPEN_RE = re.compile(r"<screenContext(?:\s[^>]*)?>")
+    #: Extracts the ``ts="..."`` timestamp attribute from an open tag.
+    _SCREEN_TS_RE = re.compile(r'ts="([^"]*)"')
 
     @staticmethod
-    def _tool_b64_encode(args: dict) -> str:
-        text = args.get("text")
-        if not isinstance(text, str):
-            return "[ludvart] b64_encode: 'text' must be a string"
-        return base64.b64encode(text.encode("utf-8")).decode("ascii")
+    def _utc_ns_timestamp() -> str:
+        """Return the current UTC time as ``YYYY-MM-DDThh:mm:ss.<nanoseconds>``.
 
-    @staticmethod
-    def _tool_b64_decode(args: dict) -> str:
-        data = args.get("b64")
-        if not isinstance(data, str):
-            return "[ludvart] b64_decode: 'b64' must be a string"
-        try:
-            return base64.b64decode(data, validate=True).decode("utf-8", "replace")
-        except Exception as exc:  # noqa: BLE001 - reported to the model
-            return f"[ludvart] b64_decode: invalid base64: {exc}"
+        Used to stamp each screen snapshot with a unique, human-readable key.
+        The nanosecond field comes from :func:`time.time_ns` so the value is
+        precise enough to be unique within a session, while the date/time
+        portion stays readable. The same string is later echoed in the
+        breadcrumb and accepted by ``get_past_snapshot``.
+        """
+        ns = time.time_ns()
+        secs, frac_ns = divmod(ns, 1_000_000_000)
+        base = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(secs))
+        return f"{base}.{frac_ns:09d}"
+
+    @classmethod
+    def _screen_breadcrumb(cls, ts: str | None) -> str:
+        """The line that replaces a stripped snapshot, keyed by its timestamp."""
+        if not ts:
+            return cls._SCREEN_PLACEHOLDER
+        return (
+            f"[screen from {ts} omitted; "
+            f"queryable by get_past_snapshot({ts})]"
+        )
+
+    @classmethod
+    def _strip_old_screenshots(cls, history: list[dict]) -> list[dict]:
+        """Return a copy of the neutral log keeping only the newest screenshot.
+
+        Every user turn embeds a ``<screenContext ts="...">...</screenContext>``
+        block. Older snapshots are stale -- the screen changes every turn -- yet
+        each is thousands of tokens, so retaining them all bloats the context and
+        accelerates compaction. Here we keep the *last* user turn's screenshot
+        verbatim and collapse the screen block of every earlier user turn to a
+        timestamped breadcrumb (see :meth:`_screen_breadcrumb`), leaving the
+        ``<userRequest>`` (and all non-user messages) untouched. The breadcrumb
+        keeps each snapshot's timestamp so the model can fetch the full snapshot
+        back with ``get_past_snapshot(timestamp)``. This only reshapes the
+        per-request render; :attr:`history` and the persisted session keep the
+        full snapshots.
+        """
+        close_tag = "</screenContext>"
+
+        def open_match(content: str):
+            return cls._SCREEN_OPEN_RE.search(content)
+
+        def has_screen(msg: dict) -> bool:
+            return (
+                isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and isinstance(msg.get("content"), str)
+                and open_match(msg["content"]) is not None
+                and close_tag in msg["content"]
+            )
+
+        last = -1
+        for i, msg in enumerate(history):
+            if has_screen(msg):
+                last = i
+        if last < 0:
+            return list(history)
+
+        out: list[dict] = []
+        for i, msg in enumerate(history):
+            if i != last and has_screen(msg):
+                content = msg["content"]
+                m = open_match(content)
+                open_tag = m.group(0)
+                ts_m = cls._SCREEN_TS_RE.search(open_tag)
+                ts = ts_m.group(1) if ts_m else None
+                start = m.start()
+                end = content.find(close_tag) + len(close_tag)
+                trimmed = (
+                    content[:start]
+                    + open_tag
+                    + "\n"
+                    + cls._screen_breadcrumb(ts)
+                    + "\n"
+                    + close_tag
+                    + content[end:]
+                )
+                new_msg = dict(msg)
+                new_msg["content"] = trimmed
+                out.append(new_msg)
+            else:
+                out.append(msg)
+        return out
+
+    def _snapshot_by_timestamp(self, ts: str) -> str | None:
+        """Return the snapshot body stored under timestamp ``ts``, or ``None``.
+
+        Scans the *unstripped* neutral log (:attr:`history`) -- not the
+        model-facing context, which may have had this snapshot collapsed to a
+        breadcrumb -- for the user turn whose ``<screenContext ts="...">`` open
+        tag carries ``ts`` and returns the text between the open and close tags
+        (the raw screenshot). Because the log is what gets persisted, a resumed
+        session can still answer for snapshots captured before the restart.
+        Returns ``None`` if no snapshot has that timestamp.
+        """
+        close_tag = "</screenContext>"
+        for msg in self.history:
+            if not (
+                isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and isinstance(msg.get("content"), str)
+            ):
+                continue
+            content = msg["content"]
+            m = self._SCREEN_OPEN_RE.search(content)
+            if m is None or close_tag not in content:
+                continue
+            ts_m = self._SCREEN_TS_RE.search(m.group(0))
+            if ts_m is None or ts_m.group(1) != ts:
+                continue
+            start = m.end()
+            end = content.find(close_tag, start)
+            if end < 0:
+                continue
+            return content[start:end].strip("\n")
+        return None
+
+    def _tool_get_past_snapshot(self, args: dict) -> str:
+        """Return a stored past screen snapshot addressed by its timestamp."""
+        ts = args.get("timestamp")
+        if not isinstance(ts, str) or not ts.strip():
+            return (
+                "[ludvart] get_past_snapshot: 'timestamp' must be a non-empty "
+                "string. Provide a valid snapshot timestamp exactly as shown in "
+                "a breadcrumb."
+            )
+        ts = ts.strip()
+        snapshot = self._snapshot_by_timestamp(ts)
+        if snapshot is None:
+            return (
+                f"[ludvart] get_past_snapshot: no snapshot found for timestamp "
+                f"{ts!r}. A valid snapshot timestamp is needed -- pass one "
+                "exactly as it appears in a breadcrumb."
+            )
+        return (
+            f"Terminal screen snapshot captured at {ts}:\n"
+            f'<screenContext ts="{ts}">\n'
+            f"{snapshot}\n"
+            "</screenContext>"
+        )

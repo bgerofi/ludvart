@@ -105,9 +105,19 @@ def _build_copilot(reg: Registration, status: StatusFn | None) -> Backend:
         GatewayError,
         copilot_authenticated,
         litellm_available,
+        shared_gateway,
     )
 
     model = reg["model"]
+    api_mode = str(reg.get("api_mode") or "chat")
+    shared_url = shared_gateway(model)
+    if shared_url is not None:
+        # Someone else already booted a gateway for this model and owns it, so
+        # no gateway is attached to the Backend and none is stopped on teardown.
+        config = copilot_provider_config(
+            shared_url, f"github_copilot/{model}", GATEWAY_API_KEY
+        )
+        return Backend(build_client(replace(config, api_mode=api_mode)), None, reg)
     if not litellm_available():
         raise GatewayError(
             "the LiteLLM gateway isn't installed; re-run ./setup.sh or "
@@ -118,7 +128,6 @@ def _build_copilot(reg: Registration, status: StatusFn | None) -> Backend:
             "GitHub Copilot isn't authorized yet; run `ludvart` in a terminal "
             "and add the Copilot model through the setup wizard once"
         )
-    api_mode = str(reg.get("api_mode") or "chat")
     gateway = CopilotGateway(model, api_mode=api_mode)
     if status is not None:
         status(f"starting the GitHub Copilot gateway (model {model!r})...")

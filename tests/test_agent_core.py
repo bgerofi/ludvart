@@ -146,15 +146,15 @@ def test_backend_tool_runs_in_process():
 
 def test_unknown_backend_tool_reports_gracefully():
     host = RecordingHost()
-    call = ToolCall(id="c1", name="web_search", input={"query": "x"})
-    llm = ScriptedLLM([_tool_turn("searching", call), _text_turn("answer")])
-    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("web_search")])
+    call = ToolCall(id="c1", name="no_such_tool", input={})
+    llm = ScriptedLLM([_tool_turn("trying", call), _text_turn("answer")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("no_such_tool")])
 
-    reply = core.run_turn("search", "SCREEN")
+    reply = core.run_turn("go", "SCREEN")
 
     assert reply == "answer"
     tool_entry = [m for m in core.history if m["role"] == "tool"][0]
-    assert "not available in split mode" in tool_entry["content"]
+    assert "unknown tool: no_such_tool" in tool_entry["content"]
     print("unknown backend tool reports gracefully: OK")
 
 
@@ -300,6 +300,115 @@ def test_missing_usage_leaves_the_badge_alone():
     print("a turn without usage does not touch the badge: OK")
 
 
+# -- past screen snapshots ---------------------------------------------------
+
+
+def _screen_ts(msg):
+    """The ts= attribute of a stored user turn's <screenContext>, or None."""
+    m = AgentCore._SCREEN_OPEN_RE.search(msg["content"])
+    if m is None:
+        return None
+    ts_m = AgentCore._SCREEN_TS_RE.search(m.group(0))
+    return ts_m.group(1) if ts_m else None
+
+
+def test_each_snapshot_is_stamped_with_a_unique_timestamp():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("a"), _text_turn("b")])
+    core = AgentCore(llm, host, system_prompt="SYS")
+
+    core.run_turn("q1", "SCREEN-1")
+    core.run_turn("q2", "SCREEN-2")
+
+    stamps = [_screen_ts(m) for m in core.history if m["role"] == "user"]
+    assert all(stamps), stamps
+    assert stamps[0] != stamps[1], stamps
+    print("snapshots are stamped with unique timestamps: OK")
+
+
+def test_only_the_newest_snapshot_is_sent_to_the_model():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("a"), _text_turn("b")])
+    core = AgentCore(llm, host, system_prompt="SYS")
+
+    core.run_turn("q1", "SCREEN-1")
+    core.run_turn("q2", "SCREEN-2")
+
+    sent = "\n".join(
+        str(m.get("content", "")) for m in llm.seen_messages[-1]
+    )
+    # The superseded snapshot is a breadcrumb; the newest one is verbatim.
+    assert "SCREEN-1" not in sent, sent
+    assert "SCREEN-2" in sent, sent
+    assert "queryable by get_past_snapshot(" in sent, sent
+    # ...but the stored log keeps both, so they stay recoverable.
+    stored = "\n".join(m["content"] for m in core.history if m["role"] == "user")
+    assert "SCREEN-1" in stored and "SCREEN-2" in stored
+    print("only the newest snapshot is sent to the model: OK")
+
+
+def test_a_stripped_snapshot_is_fetched_back_by_timestamp():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("a"), _text_turn("b")])
+    core = AgentCore(llm, host, system_prompt="SYS")
+
+    core.run_turn("q1", "SCREEN-1")
+    ts = _screen_ts([m for m in core.history if m["role"] == "user"][0])
+    core.run_turn("q2", "SCREEN-2")
+
+    out = core._run_tool(ToolCall(id="c", name="get_past_snapshot", input={"timestamp": ts}))
+
+    assert "SCREEN-1" in out, out
+    assert host.tool_calls == []  # answered from the log, no terminal round-trip
+    print("a stripped snapshot is fetched back by timestamp: OK")
+
+
+def test_get_past_snapshot_rejects_an_unknown_timestamp():
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    out = core._run_tool(
+        ToolCall(id="c", name="get_past_snapshot", input={"timestamp": "nope"})
+    )
+
+    assert "no snapshot found" in out, out
+    print("get_past_snapshot rejects an unknown timestamp: OK")
+
+
+def test_past_snapshots_survive_a_resumed_session():
+    """The log carries the snapshots, and the log is what gets persisted."""
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("a")])
+    core = AgentCore(llm, host, system_prompt="SYS")
+    core.run_turn("q1", "SCREEN-1")
+    ts = _screen_ts([m for m in core.history if m["role"] == "user"][0])
+    saved_transcript, saved_history = core.transcript, core.history
+
+    resumed = AgentCore(ScriptedLLM([]), RecordingHost(), system_prompt="SYS")
+    resumed.resume(saved_transcript, saved_history)
+
+    out = resumed._run_tool(
+        ToolCall(id="c", name="get_past_snapshot", input={"timestamp": ts})
+    )
+    assert "SCREEN-1" in out, out
+    print("past snapshots survive a resumed session: OK")
+
+
+def test_compact_on_demand_ignores_the_threshold():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("a"), _text_turn("BRIEF")])
+    core = AgentCore(llm, host, system_prompt="SYS")
+    core.run_turn("q1", "SCREEN-1")
+    core.history.append({"role": "user", "content": "filler"})
+
+    # maybe_compact() declines (no usage reported -> context_pct is None)...
+    assert core.maybe_compact() is False
+    # ...but an explicit /compact still runs.
+    assert core.compact() == "BRIEF"
+    assert len(core.history) == 2, core.history
+    print("on-demand compaction ignores the threshold: OK")
+
+
 def main():
     test_plain_answer_turn()
     test_client_tool_routes_through_host()
@@ -314,6 +423,12 @@ def main():
     test_usage_reported_to_host_for_context_badge()
     test_usage_reported_on_every_step_of_a_tool_loop()
     test_missing_usage_leaves_the_badge_alone()
+    test_each_snapshot_is_stamped_with_a_unique_timestamp()
+    test_only_the_newest_snapshot_is_sent_to_the_model()
+    test_a_stripped_snapshot_is_fetched_back_by_timestamp()
+    test_get_past_snapshot_rejects_an_unknown_timestamp()
+    test_past_snapshots_survive_a_resumed_session()
+    test_compact_on_demand_ignores_the_threshold()
     print("\nALL agent core tests passed.")
 
 

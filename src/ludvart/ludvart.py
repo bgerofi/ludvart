@@ -76,6 +76,12 @@ if TYPE_CHECKING:
 #   <prefix> <prefix>   send a literal prefix byte to the child
 DEFAULT_PREFIX = b"\x07"  # Ctrl-G
 
+#: Slash commands whose state lives with the agent loop (the conversation, the
+#: model registry, the sessions, the MCP servers), so the client forwards them
+#: to the backend instead of handling them itself. Everything else -- helper
+#: installation, perf timings, approval -- is genuinely client-side.
+_BACKEND_COMMANDS = frozenset({"model", "sessions", "compact", "mcp_refresh"})
+
 # In addition to the prefix commands, a single dedicated "summon" key opens the
 # AI panel in one keystroke. Ctrl-O (0x0F) is used because screen (Ctrl-A) and
 # tmux (Ctrl-B) leave it alone, so it works even when ludvart runs inside them.
@@ -827,7 +833,6 @@ class Ludvart:
             self._stdout_fd, b"\x1b[?25h" + _PASTE_ON + self._compositor.clear()
         )
         self._render_split()
-        self._maybe_start_mcp()
         self._maybe_start_backend_setup()
         try:
             self._split_loop()
@@ -851,30 +856,6 @@ class Ludvart:
             return
         panel.add_system("No model is registered on the backend yet.")
         self._model_add_start()
-
-    def _maybe_start_mcp(self) -> None:
-        """Discover external MCP tools once, the first time the panel opens.
-
-        Runs on the panel spinner (via :meth:`_start_action`) so a slow or
-        unreachable server never blocks the UI; the result is shown as a system
-        line. Does nothing when there is no ``~/.ludvart/mcp.json``.
-        """
-        if self._mcp_started:
-            return
-        self._mcp_started = True
-        if self._mcp is None:
-            self._mcp = McpManager()
-        if not self._mcp.config_exists():
-            return
-
-        def worker() -> str:
-            return self._mcp.refresh().report()
-
-        self._start_action(
-            worker,
-            info="Discovering MCP tools\u2026",
-            activity="Discovering MCP tools",
-        )
 
     def _apply_split_size(self) -> None:
         """Resize the model and child PTY to the region above the panel."""
@@ -1471,18 +1452,15 @@ class Ludvart:
         parts = line[1:].split()
         cmd = parts[0] if parts else ""
         args = parts[1:]
-        # In backend (split) mode the registry and sessions live on the backend,
-        # so model management and session commands are forwarded there. ``/model
-        # add`` is the exception: its guided prompts run locally (on the panel)
-        # and only the finished registration is sent to the backend to verify.
-        if self._backend_client is not None and cmd == "model":
-            if (args[0] if args else "list") == "add":
+        # The conversation, the model registry, the sessions and the MCP servers
+        # all live on the backend, so those commands are forwarded there.
+        # ``/model add`` is the exception: its guided prompts run locally (on the
+        # panel) and only the finished registration is sent over to be verified.
+        if self._backend_client is not None and cmd in _BACKEND_COMMANDS:
+            if cmd == "model" and (args[0] if args else "list") == "add":
                 self._model_add_start()
             else:
                 self._forward_command_to_backend(line[1:])
-            return
-        if self._backend_client is not None and cmd == "sessions":
-            self._forward_command_to_backend(line[1:])
             return
         if cmd == "sessions":
             self._cmd_sessions(args)
@@ -1653,28 +1631,16 @@ class Ludvart:
             )
 
     def _cmd_mcp_refresh(self) -> None:
-        """Handle ``/mcp_refresh``: re-read mcp.json and rediscover tools."""
+        """Handle ``/mcp_refresh`` with no backend: there is nothing to refresh.
+
+        MCP servers are started and owned by the agent loop, which lives in the
+        backend process, so the real work happens there (see
+        :func:`ludvart.server._do_mcp_refresh`).
+        """
         panel = self._panel
         if panel is None:
             return
-        if self._mcp is None:
-            self._mcp = McpManager()
-            self._mcp_started = True
-        if not self._mcp.config_exists():
-            panel.add_system(
-                "No MCP config found. Create ~/.ludvart/mcp.json with a "
-                '"servers" map (VS Code format) to add MCP servers.'
-            )
-            return
-
-        def worker() -> str:
-            return self._mcp.refresh().report()
-
-        self._start_action(
-            worker,
-            info="Refreshing MCP servers\u2026",
-            activity="Refreshing MCP servers",
-        )
+        panel.add_system("MCP servers run on the backend; no backend connected.")
 
     @staticmethod
     def _parse_helper_init(snapshot: str) -> str:
