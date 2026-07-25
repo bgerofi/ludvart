@@ -1,29 +1,15 @@
 """A single Ctrl-O opens the AI panel; a second Ctrl-O closes it."""
 
-import errno, fcntl, os, pty, select, struct, termios, time
+import fcntl, os, pty, struct, termios, time
 import pyte
+
+from e2e_util import Checks, ludvart_argv, screen_text, wait_for, wait_until_started
 
 ROWS, COLS = 24, 90
 
 
-def pump(fd, stream, seconds):
-    end = time.time() + seconds
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if fd in r:
-            try:
-                d = os.read(fd, 65536)
-            except OSError as e:
-                if e.errno == errno.EIO:
-                    break
-                raise
-            if not d:
-                break
-            stream.feed(d)
-
-
 def panel_open(screen):
-    text = "\n".join(screen.display)
+    text = screen_text(screen)
     return "ludvart>" in text or "^O/Esc:close" in text
 
 
@@ -32,32 +18,32 @@ def main():
     if pid == 0:
         os.environ["PS1"] = "$ "
         os.environ["TERM"] = "xterm"
-        os.execvp("ludvart", ["ludvart", "--", "bash", "--norc", "-i"])
+        argv = ludvart_argv()
+        os.execvp(argv[0], argv)
     fcntl.ioctl(m, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    checks = Checks()
 
-    pump(m, stream, 6)
-    print("panel open before Ctrl-O:", panel_open(screen))
+    # Keys sent before ludvart is up are echoed by the tty instead of reaching
+    # it, which used to look like "the panel refused to open".
+    checks.add("ludvart finished starting up", wait_until_started(m, stream.feed, screen))
+    checks.add("panel closed before Ctrl-O", not panel_open(screen))
 
     os.write(m, b"\x0f")  # Ctrl-O -> summon
-    pump(m, stream, 3)
-    opened = panel_open(screen)
-    print("panel open after 1st Ctrl-O:", opened)
+    checks.add("panel opens on 1st Ctrl-O", wait_for(m, stream.feed, lambda: panel_open(screen), 10))
 
     os.write(m, b"\x0f")  # Ctrl-O -> close
-    pump(m, stream, 3)
-    closed = not panel_open(screen)
-    print("panel closed after 2nd Ctrl-O:", closed)
+    checks.add("panel closes on 2nd Ctrl-O", wait_for(m, stream.feed, lambda: not panel_open(screen), 10))
 
     os.write(m, b"echo READY\r")
-    pump(m, stream, 2)
-    usable = "READY" in "\n".join(screen.display)
-    print("shell usable after close:", usable)
+    checks.add("shell usable after close", wait_for(m, stream.feed, lambda: "READY" in screen_text(screen), 10))
 
     os.write(m, b"\x03")
     time.sleep(0.3)
-    print("RESULT:", "PASS" if (opened and closed and usable) else "FAIL")
+    print("== final screen ==")
+    print(screen_text(screen))
+    checks.report()
 
 
 if __name__ == "__main__":

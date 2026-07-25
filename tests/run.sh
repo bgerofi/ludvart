@@ -6,6 +6,9 @@
 # default every test runs; pass --no-e2e to skip the end-to-end tests that fork
 # a real ludvart and require a configured LLM provider (live LLM interaction).
 #
+# The e2e tests cost real money, so they run on a cheap model rather than on
+# whatever is active in the registry; see LUDVART_E2E_MODEL below.
+#
 # Usage:
 #   tests/run.sh [--no-e2e] [extra pytest args...]
 #
@@ -31,6 +34,15 @@ Options:
   -h, --help        Show this help and exit.
 
 Any other arguments are forwarded to pytest unchanged.
+
+Environment:
+  LUDVART_E2E_MODEL
+                    Which registered model the e2e tests should run on, given
+                    as a 1-based /model list position or a unique substring of
+                    the model id. Defaults to a cheap model (these tests check
+                    ludvart's plumbing, not the model's intelligence, so paying
+                    for a frontier model buys no extra signal). Set it to the
+                    empty string to use whichever model is currently active.
 
 Examples:
   tests/run.sh                                 # run everything

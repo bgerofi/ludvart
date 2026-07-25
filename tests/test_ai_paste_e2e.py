@@ -17,6 +17,8 @@ Run:
 import errno, fcntl, os, pty, select, struct, termios, time
 import pyte
 
+from e2e_util import Checks, ludvart_argv, screen_text, wait_for, wait_until_started
+
 ROWS, COLS = 24, 90
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
@@ -51,62 +53,51 @@ def main():
     if pid == 0:
         os.environ["PS1"] = "$ "
         os.environ["TERM"] = "xterm"
-        os.execvp("ludvart", ["ludvart", "--", "bash", "--norc", "-i"])
+        argv = ludvart_argv()
+        os.execvp(argv[0], argv)
     fcntl.ioctl(m, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    checks = Checks()
 
-    pump(m, stream, 6)
+    checks.add("ludvart finished starting up", wait_until_started(m, stream.feed, screen))
     os.write(m, b"\x0f")  # Ctrl-O: open panel
-    pump(m, stream, 2)
+    checks.add("panel opened", wait_for(m, stream.feed, lambda: "ludvart>" in screen_text(screen), 10, settle=0.3))
 
-    results = []
+    def expect(name, want):
+        """Wait for the input line to read ``want``, and record the check."""
+        wait_for(m, stream.feed, lambda: input_line(screen).endswith(want), 5)
+        line = input_line(screen)
+        checks.add(name, line.endswith(want), f"line is {line!r}, wanted it to end with {want!r}")
 
     # 1. plain typing
     os.write(m, b"hello world")
-    pump(m, stream, 1)
-    line = input_line(screen)
-    ok = line.endswith("hello world")
-    results.append(("type", ok, line))
+    expect("typing appears in the input line", "hello world")
 
     # 2. bracketed paste with an embedded newline (must fold to space, no submit)
     os.write(m, PASTE_START + b" PASTED\ntext" + PASTE_END)
-    pump(m, stream, 1)
-    line = input_line(screen)
-    ok = line.endswith("hello world PASTED text")
-    results.append(("paste", ok, line))
+    expect("pasted newline folds to a space and does not submit", "hello world PASTED text")
 
     # 3. move left 4 (into "text") and insert 'Z'
     for _ in range(4):
         os.write(m, b"\x1b[D")  # Left
         pump(m, stream, 0.2)
     os.write(m, b"Z")
-    pump(m, stream, 1)
-    line = input_line(screen)
-    ok = line.endswith("hello world PASTED Ztext")
-    results.append(("edit-mid", ok, line))
+    expect("editing mid-line inserts at the cursor", "hello world PASTED Ztext")
 
     # 4. Home then Ctrl-K clears the whole line
     os.write(m, b"\x1b[H")   # Home
     pump(m, stream, 0.3)
     os.write(m, b"\x0b")     # Ctrl-K kill-to-end
-    pump(m, stream, 1)
+    wait_for(m, stream.feed, lambda: input_line(screen).strip() == "ludvart>", 5)
     line = input_line(screen)
-    ok = line.strip() == "ludvart>"
-    results.append(("kill", ok, line))
-
-    print("== e2e paste/edit ==")
-    passed = True
-    for name, ok, line in results:
-        print(f"  {'OK ' if ok else 'FAIL'} {name}: {line!r}")
-        passed = passed and ok
-
-    print("\nRESULT:", "PASS" if passed else "FAIL")
+    checks.add("Home + Ctrl-K clears the line", line.strip() == "ludvart>", f"line is {line!r}")
 
     os.write(m, b"\x0f")  # close panel
     time.sleep(0.2)
     os.write(m, b"\x03")
     time.sleep(0.3)
+    checks.report()
 
 
 if __name__ == "__main__":

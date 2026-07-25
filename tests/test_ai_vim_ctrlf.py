@@ -1,25 +1,16 @@
 """In vim, the model should page down (Ctrl-F) without modifying the buffer."""
 
-import errno, fcntl, os, pty, select, struct, termios, time
+import fcntl, os, pty, struct, termios, time
 import pyte
-
+from e2e_util import (
+    Approver,
+    Checks,
+    ludvart_argv,
+    screen_text,
+    wait_for,
+    wait_until_started,
+)
 ROWS, COLS = 24, 90
-
-
-def pump(fd, stream, seconds):
-    end = time.time() + seconds
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if fd in r:
-            try:
-                d = os.read(fd, 65536)
-            except OSError as e:
-                if e.errno == errno.EIO:
-                    break
-                raise
-            if not d:
-                break
-            stream.feed(d)
 
 
 def show(screen, label):
@@ -40,30 +31,66 @@ def main():
     if pid == 0:
         os.environ["PS1"] = "$ "
         os.environ["TERM"] = "xterm"
-        os.execvp("ludvart", ["ludvart", "--", "bash", "--norc", "-i"])
+        argv = ludvart_argv()
+        os.execvp(argv[0], argv)
     fcntl.ioctl(m, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    checks = Checks()
+    approver = Approver(m)
 
-    def send(data, wait):
-        os.write(m, data)
-        pump(m, stream, wait)
-
-    pump(m, stream, 8)
-    send(b"vim -u NONE /tmp/ludvart_vim_test.txt\r", 3)
+    checks.add("ludvart finished starting up", wait_until_started(m, stream.feed, screen))
+    os.write(m, b"vim -u NONE /tmp/ludvart_vim_test.txt\r")
+    checks.add(
+        "vim opened at the top of the file",
+        wait_for(m, stream.feed, lambda: "line_001" in screen_text(screen), 15, settle=0.5),
+    )
     show(screen, "vim opened (top of file)")
-    send(b"\x07", 0.3); send(b"a", 0.5)
-    send(b"Page down one screen in vim (this is a read-only view, do NOT "
-         b"modify the buffer).", 0.4)
-    send(b"\r", 60)
-    show(screen, "after model pages down (expect later lines, no [+] modified)")
-    # Quit vim without saving.
+
+    os.write(m, b"\x07")
+    time.sleep(0.3)
+    os.write(m, b"a")
+    checks.add(
+        "panel opened",
+        wait_for(m, stream.feed, lambda: "ludvart>" in screen_text(screen), 10, settle=0.3),
+    )
+    os.write(m, b"Page down one screen in vim (this is a read-only view, do NOT "
+                b"modify the buffer).")
+    time.sleep(0.4)
+    os.write(m, b"\r")
+    wait_for(
+        m,
+        stream.feed,
+        lambda: approver.approved and "Thinking" not in screen_text(screen)
+        and "Calling" not in screen_text(screen),
+        120,
+        approver=approver,
+        settle=1.0,
+    )
+    checks.add("the model drove vim through inject_input", approver.approved)
+
+    # Back to vim to inspect the result.
     os.write(m, b"\x07a")
-    pump(m, stream, 1)
+    wait_for(m, stream.feed, lambda: "ludvart>" not in screen_text(screen), 8, settle=0.5)
+    show(screen, "after model pages down (expect later lines, no [+] modified)")
+    checks.add(
+        "the view paged past the first screenful",
+        "line_001" not in screen_text(screen),
+        f"vim showed:\n{screen_text(screen)}",
+    )
+
+    # A plain :q is the buffer-modified oracle: vim refuses with E37 if the
+    # model typed anything into the file.
+    os.write(m, b"\x1b:q\r")
+    wait_for(m, stream.feed, lambda: "E37" in screen_text(screen), 4, settle=0.5)
+    modified = "E37" in screen_text(screen)
+    checks.add("the buffer was left unmodified", not modified, "vim refused :q with E37")
+
     os.write(m, b"\x1b:q!\r")
-    pump(m, stream, 2)
+    time.sleep(0.5)
     os.write(m, b"\x03")
     time.sleep(0.3)
+    checks.report()
 
 
 if __name__ == "__main__":

@@ -1,25 +1,11 @@
 """Ask the model what tools it can invoke; it should name inject_input."""
 
-import errno, fcntl, os, pty, select, struct, termios, time
+import fcntl, os, pty, struct, termios, time
 import pyte
 
+from e2e_util import Checks, ludvart_argv, screen_text, wait_for, wait_until_started
+
 ROWS, COLS = 24, 80
-
-
-def pump(fd, stream, seconds):
-    end = time.time() + seconds
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if fd in r:
-            try:
-                d = os.read(fd, 65536)
-            except OSError as e:
-                if e.errno == errno.EIO:
-                    break
-                raise
-            if not d:
-                break
-            stream.feed(d)
 
 
 def show(screen, label):
@@ -35,22 +21,42 @@ def main():
     if pid == 0:
         os.environ["PS1"] = "$ "
         os.environ["TERM"] = "xterm"
-        os.execvp("ludvart", ["ludvart", "--", "bash", "--norc", "-i"])
+        argv = ludvart_argv()
+        os.execvp(argv[0], argv)
     fcntl.ioctl(m, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    checks = Checks()
 
-    def send(data, wait):
-        os.write(m, data)
-        pump(m, stream, wait)
+    checks.add("ludvart finished starting up", wait_until_started(m, stream.feed, screen))
+    os.write(m, b"\x07")
+    time.sleep(0.3)
+    os.write(m, b"a")
+    checks.add(
+        "panel opened",
+        wait_for(m, stream.feed, lambda: "ludvart>" in screen_text(screen), 10, settle=0.3),
+    )
 
-    pump(m, stream, 8)
-    send(b"\x07", 0.3); send(b"a", 0.5)
-    send(b"What tools can you invoke?", 0.4)
-    send(b"\r", 40)
+    os.write(m, b"What tools can you invoke? List their names.")
+    time.sleep(0.4)
+    os.write(m, b"\r")
+    wait_for(m, stream.feed, lambda: "Thinking" in screen_text(screen), 20)
+    done = wait_for(
+        m, stream.feed, lambda: "Thinking" not in screen_text(screen), 90, settle=1.0
+    )
     show(screen, "reply to 'What tools can you invoke?'")
+    panel = screen_text(screen)
+    checks.add("the turn finished", done)
+    # If the tool specs never reached the model it cannot name them.
+    checks.add(
+        "the model names inject_input among its tools",
+        "inject_input" in panel,
+        f"panel showed:\n{panel}",
+    )
+
     os.write(m, b"\x07a\x03")
     time.sleep(0.3)
+    checks.report()
 
 
 if __name__ == "__main__":

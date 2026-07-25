@@ -10,16 +10,37 @@ Two kinds of test files live under ``tests/``:
   ``e2e``. Because a keyless ``ludvart`` drops into an interactive setup wizard
   (which would hang the fork), they are skipped automatically unless an LLM
   provider is configured.
+
+End-to-end tests talk to a real model and cost real money, so they do *not*
+inherit whatever expensive model happens to be active in the registry; see
+:data:`DEFAULT_E2E_MODEL`.
 """
 
 from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import os
+import pty
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
+
+
+#: Model the e2e suite asks for by default. These tests exercise ludvart's own
+#: plumbing (tool calls, injection, settling), not the model's intelligence, so
+#: a cheap fast model is the right default -- running them on a frontier model
+#: costs a lot for no extra signal. Overridden with ``LUDVART_E2E_MODEL``; set
+#: that to an empty string to just use whichever model is active.
+DEFAULT_E2E_MODEL = "gpt-5.6-terra"
+
+#: Chooses the e2e model. Accepts anything ``/model use`` accepts: a 1-based
+#: position in the registry or a unique substring of the model id.
+E2E_MODEL_ENV = "LUDVART_E2E_MODEL"
 
 
 # --------------------------------------------------------------------------- #
@@ -105,6 +126,151 @@ def _llm_configured() -> bool:
         return False
 
 
+def _e2e_registry(token: str) -> tuple[str | None, str]:
+    """Write a one-model registry for the e2e run; return (path, note).
+
+    The e2e children are separate processes, so the model is selected the only
+    way that reaches them: a private ``models.json`` pointed at by
+    ``LUDVART_MODELS_FILE``. The real registry is never written to.
+
+    Only the selected registration is copied over. Every ludvart startup
+    verifies the models it does not activate, which for a direct provider means
+    a live request -- pointless here, and paid for once per e2e test.
+    """
+    from ludvart.models import find_registration, label, load_registry
+
+    models = load_registry()
+    if not models:
+        return None, ""
+    index = find_registration(models, token)
+    if index is None:
+        return None, f"no registered model matches {token!r}; using the active one"
+    chosen = dict(models[index])
+    chosen["active"] = True
+    path = os.path.join(tempfile.mkdtemp(prefix="ludvart_e2e_"), "models.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump([chosen], fh)
+    return path, f"e2e model: {label(chosen)}"
+
+
+class _E2ESession:
+    """Process-wide state shared by every e2e test: the model and the gateway.
+
+    Each e2e test forks its own short-lived ``ludvart``. Left alone, every one
+    of them boots its own LiteLLM gateway, which costs tens of seconds and
+    dominates the runtime of the suite. The gateway is stateless and proxies a
+    single model, and all the e2e tests use the same model, so exactly one is
+    started here and handed to the children through the environment.
+    """
+
+    def __init__(self) -> None:
+        self._gateway = None
+        self._env: dict[str, str | None] = {}
+        self._applied: dict[str, str] = {}
+
+    def _setenv(self, name: str, value: str) -> None:
+        self._env.setdefault(name, os.environ.get(name))
+        self._applied[name] = value
+        os.environ[name] = value
+
+    def apply(self) -> None:
+        """Re-export the session's environment before each e2e test.
+
+        Several unit tests repoint ``LUDVART_MODELS_FILE`` at a throwaway
+        registry and never put it back. Without this, every e2e test collected
+        after one of them would decide no provider is configured and skip
+        itself -- silently, and only in a full-suite run.
+        """
+        for name, value in self._applied.items():
+            os.environ[name] = value
+
+    def start(self) -> None:
+        from ludvart.models import active_registration, is_copilot, load_registry
+
+        _restore_pristine_registry()
+        token = os.environ.get(E2E_MODEL_ENV, DEFAULT_E2E_MODEL).strip()
+        if token:
+            path, note = _e2e_registry(token)
+            if note:
+                print(note)
+            if path is not None:
+                self._setenv("LUDVART_MODELS_FILE", path)
+        reg = active_registration(load_registry())
+        if reg is None or not is_copilot(reg):
+            return  # only Copilot models go through a gateway
+        from ludvart.gateway import (
+            SHARED_GATEWAY_MODEL_ENV,
+            SHARED_GATEWAY_URL_ENV,
+            CopilotGateway,
+        )
+
+        gateway = CopilotGateway(
+            reg["model"], api_mode=str(reg.get("api_mode") or "chat")
+        )
+        print(f"starting one shared gateway for {reg['model']}...")
+        gateway.start()
+        self._gateway = gateway
+        self._setenv(SHARED_GATEWAY_URL_ENV, gateway.base_url)
+        self._setenv(SHARED_GATEWAY_MODEL_ENV, reg["model"])
+
+    def stop(self) -> None:
+        if self._gateway is not None:
+            self._gateway.stop()
+            self._gateway = None
+        for name, previous in self._env.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+        self._env.clear()
+        self._applied.clear()
+
+
+#: ``LUDVART_MODELS_FILE`` as it stood before any test ran, so the e2e model can
+#: always be resolved against the developer's real registry.
+_PRISTINE_MODELS_FILE = os.environ.get("LUDVART_MODELS_FILE")
+
+
+def _restore_pristine_registry() -> None:
+    if _PRISTINE_MODELS_FILE is None:
+        os.environ.pop("LUDVART_MODELS_FILE", None)
+    else:
+        os.environ["LUDVART_MODELS_FILE"] = _PRISTINE_MODELS_FILE
+
+
+#: Created on the first e2e test, torn down at the end of the session.
+_e2e_session: _E2ESession | None = None
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
+    global _e2e_session
+    if _e2e_session is not None:
+        _e2e_session.stop()
+        _e2e_session = None
+
+
+def _reap(pid: int) -> None:
+    """Make sure a forked e2e child (and its process group) is really gone.
+
+    The e2e scripts drive a ``pty.fork``ed ludvart and return without killing
+    it, so without this each finished test leaves a live ludvart behind.
+    """
+    import signal
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            break
+        for _ in range(20):
+            try:
+                if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                    return
+            except ChildProcessError:
+                return
+            time.sleep(0.05)
+
+
 def _top_level_functions(path: Path) -> set[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -140,18 +306,40 @@ class _MainScriptItem(pytest.Item):
         self.add_marker(pytest.mark.e2e)
 
     def setup(self) -> None:
+        global _e2e_session
+        if _e2e_session is not None:
+            _e2e_session.apply()
+            return
+        _restore_pristine_registry()
         if not _llm_configured():
             pytest.skip(
                 "no LLM provider configured; e2e forks a real ludvart which "
                 "would otherwise block on the interactive setup wizard"
             )
+        _e2e_session = _E2ESession()
+        _e2e_session.start()
 
     def runtest(self) -> None:
         spec = importlib.util.spec_from_file_location(self.path.stem, self.path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.main()
+        children: list[int] = []
+        real_fork = pty.fork
+
+        def recording_fork():
+            pid, fd = real_fork()
+            if pid != 0:
+                children.append(pid)
+            return pid, fd
+
+        pty.fork = recording_fork
+        try:
+            module.main()
+        finally:
+            pty.fork = real_fork
+            for pid in children:
+                _reap(pid)
 
     def reportinfo(self):
         return self.path, 0, f"e2e: {self.path.stem}"

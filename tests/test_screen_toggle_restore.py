@@ -3,6 +3,8 @@ blank lines) and stays correct when content changes while shrunk."""
 
 from ludvart.screen import LudvartScreen
 
+from e2e_util import Checks
+
 COLS, ROWS, PANEL = 80, 24, 10
 APP = ROWS - PANEL
 
@@ -18,23 +20,19 @@ def disp(screen):
     return [row.rstrip() for row in screen.display]
 
 
-def check(label, cond):
-    print(f"{'OK ' if cond else 'FAIL'}: {label}")
-    return cond
-
-
-def scenario_full_screen():
+def scenario_full_screen(checks):
     s = LudvartScreen(COLS, ROWS)
     feed_lines(s, [f"line_{i:02d}" for i in range(30)])  # scrolls
     before, cur_before = disp(s), (s.cursor.y, s.cursor.x)
     s.resize(APP, COLS)      # open panel
     s.resize(ROWS, COLS)     # close panel
     after, cur_after = disp(s), (s.cursor.y, s.cursor.x)
-    return check("full screen: viewport identical after toggle", after == before) and \
-        check("full screen: cursor identical", cur_before == cur_after)
+    checks.add("full screen: viewport identical after toggle", after == before)
+    checks.add("full screen: cursor identical", cur_before == cur_after,
+               f"{cur_before} -> {cur_after}")
 
 
-def scenario_partial_with_blanks():
+def scenario_partial_with_blanks(checks):
     s = LudvartScreen(COLS, ROWS)
     import pyte
     stream = pyte.ByteStream(s)
@@ -43,11 +41,12 @@ def scenario_partial_with_blanks():
     s.resize(APP, COLS)
     s.resize(ROWS, COLS)
     after, cur_after = disp(s), (s.cursor.y, s.cursor.x)
-    return check("partial: trailing blanks preserved", after == before) and \
-        check("partial: cursor identical", cur_before == cur_after)
+    checks.add("partial: trailing blanks preserved", after == before)
+    checks.add("partial: cursor identical", cur_before == cur_after,
+               f"{cur_before} -> {cur_after}")
 
 
-def scenario_changes_while_open():
+def scenario_changes_while_open(checks):
     # ludvart path: full screen -> shrink -> new output arrives -> grow.
     s = LudvartScreen(COLS, ROWS)
     feed_lines(s, [f"orig_{i:02d}" for i in range(24)])
@@ -58,18 +57,19 @@ def scenario_changes_while_open():
     ref = LudvartScreen(COLS, ROWS)
     feed_lines(ref, [f"orig_{i:02d}" for i in range(24)] +
                [f"new_{i:02d}" for i in range(5)])
-    return check("changed-while-open: matches always-full-size screen",
-                 disp(s) == disp(ref)) and \
-        check("changed-while-open: cursor matches",
-              (s.cursor.y, s.cursor.x) == (ref.cursor.y, ref.cursor.x))
+    checks.add("changed-while-open: matches always-full-size screen",
+               disp(s) == disp(ref))
+    checks.add("changed-while-open: cursor matches",
+               (s.cursor.y, s.cursor.x) == (ref.cursor.y, ref.cursor.x),
+               f"{(s.cursor.y, s.cursor.x)} != {(ref.cursor.y, ref.cursor.x)}")
 
 
 def main():
-    ok = True
-    ok &= scenario_full_screen()
-    ok &= scenario_partial_with_blanks()
-    ok &= scenario_changes_while_open()
-    print("RESULT:", "PASS" if ok else "FAIL")
+    checks = Checks()
+    scenario_full_screen(checks)
+    scenario_partial_with_blanks(checks)
+    scenario_changes_while_open(checks)
+    checks.report()
 
 
 if __name__ == "__main__":

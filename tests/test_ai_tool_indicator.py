@@ -1,29 +1,18 @@
 """Capture the panel indicator; it should show 'Calling inject_input' mid-tool."""
 
-import errno, fcntl, os, pty, select, struct, termios, time
+import fcntl, os, pty, struct, termios, time
 import pyte
 
+from e2e_util import (
+    Approver,
+    Checks,
+    ludvart_argv,
+    screen_text,
+    wait_for,
+    wait_until_started,
+)
+
 ROWS, COLS = 24, 90
-
-
-def pump_capture(fd, stream, seconds, needle, hits):
-    end = time.time() + seconds
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.05)
-        if fd in r:
-            try:
-                d = os.read(fd, 65536)
-            except OSError as e:
-                if e.errno == errno.EIO:
-                    break
-                raise
-            if not d:
-                break
-            stream.feed(d)
-        # Scan the live screen for the indicator text.
-        joined = "\n".join(l.rstrip() for l in stream.listener.display)
-        if needle in joined:
-            hits.append(True)
 
 
 def main():
@@ -31,30 +20,45 @@ def main():
     if pid == 0:
         os.environ["PS1"] = "$ "
         os.environ["TERM"] = "xterm"
-        os.execvp("ludvart", ["ludvart", "--", "bash", "--norc", "-i"])
+        argv = ludvart_argv()
+        os.execvp(argv[0], argv)
     fcntl.ioctl(m, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
-
-    def send(data, wait):
-        os.write(m, data)
-        pump_capture(m, stream, wait, "Calling", hits)
-
+    checks = Checks()
+    # ludvart asks before typing into the terminal; nothing would answer it here
+    # and the whole turn would block until it timed out.
+    approver = Approver(m)
     hits = []
-    pump_capture(m, stream, 8, "Calling", hits)
-    send(b"\x07", 0.3); send(b"a", 0.5)
-    send(b"Run 'ls' in the terminal for me.", 0.4)
-    os.write(m, b"\r")
-    pump_capture(m, stream, 40, "Calling", hits)
 
-    print("saw 'Calling ...' indicator:", bool(hits))
-    print("\n== final screen ==")
+    def sink(data):
+        stream.feed(data)
+        if "Calling" in screen_text(screen):
+            hits.append(True)
+
+    checks.add("ludvart finished starting up", wait_until_started(m, sink, screen))
+    os.write(m, b"\x07")
+    time.sleep(0.3)
+    os.write(m, b"a")
+    checks.add("panel opened", wait_for(m, sink, lambda: "ludvart>" in screen_text(screen), 10, settle=0.3))
+
+    os.write(m, b"Run 'ls' in the terminal for me.")
+    time.sleep(0.4)
+    os.write(m, b"\r")
+    # The turn is over once the spinner stops and the panel is idle again.
+    wait_for(m, sink, lambda: bool(hits) and approver.approved, 60, approver=approver)
+
+    print("== final screen ==")
     for l in screen.display:
         r = l.rstrip()
         if r:
             print(r)
+    checks.add("panel showed a 'Calling <tool>' indicator", bool(hits))
+    checks.add("inject_input asked for approval before typing", approver.approved)
+
     os.write(m, b"\x07a\x03")
     time.sleep(0.3)
+    checks.report()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ Run:
 import errno, fcntl, os, pty, select, struct, termios, time
 import pyte
 
+from e2e_util import Checks, ludvart_argv, wait_for, wait_until_started
+
 ROWS, COLS = 24, 90
 PREFIX = b"\x07"      # Ctrl-G
 PGUP = b"\x1b[5~"
@@ -52,49 +54,50 @@ def main():
     if pid == 0:
         os.environ["PS1"] = "$ "
         os.environ["TERM"] = "xterm"
-        os.execvp("ludvart", ["ludvart", "--", "bash", "--norc", "-i"])
+        argv = ludvart_argv()
+        os.execvp(argv[0], argv)
     fcntl.ioctl(m, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    checks = Checks()
 
-    pump(m, stream, 6)
+    checks.add("ludvart finished starting up", wait_until_started(m, stream.feed, screen))
     os.write(m, b"\x0f")  # open panel (defaults to half the screen height)
-    pump(m, stream, 2)
+    checks.add("panel opened", wait_for(m, stream.feed, lambda: header_row(screen) >= 0, 10, settle=0.3))
 
     default = panel_height(screen)  # new default: half the screen
 
     # Shrink several rows so the half-resize and restore are observable (the
     # panel already opens at half, so PageUp from there would be a no-op).
+    expect_half = ROWS // 2
     for _ in range(4):
         os.write(m, PREFIX + DOWN)  # Ctrl-G Down -> shrink by 1
         pump(m, stream, 0.4)
+    wait_for(m, stream.feed, lambda: panel_height(screen) == expect_half - 4, 5)
     original = panel_height(screen)
 
     os.write(m, PREFIX + PGUP)  # -> half screen
-    pump(m, stream, 1.5)
+    wait_for(m, stream.feed, lambda: panel_height(screen) == expect_half, 5, settle=0.3)
     half = panel_height(screen)
 
     os.write(m, PREFIX + PGDN)  # -> restore
-    pump(m, stream, 1.5)
+    wait_for(m, stream.feed, lambda: panel_height(screen) == original, 5, settle=0.3)
     restored = panel_height(screen)
 
     print(
         f"default={default} original={original} half={half} "
         f"restored={restored}  (rows={ROWS})"
     )
-    expect_half = ROWS // 2
-    ok = (
-        default == expect_half
-        and original == expect_half - 4
-        and half == expect_half
-        and restored == original
-    )
-    print("RESULT:", "PASS" if ok else "FAIL")
+    checks.add("panel opens at half the screen", default == expect_half, f"got {default}, want {expect_half}")
+    checks.add("Ctrl-G Down shrinks by one row each", original == expect_half - 4, f"got {original}, want {expect_half - 4}")
+    checks.add("Ctrl-G PageUp snaps to half", half == expect_half, f"got {half}, want {expect_half}")
+    checks.add("Ctrl-G PageDown restores the prior height", restored == original, f"got {restored}, want {original}")
 
     os.write(m, b"\x0f")
     time.sleep(0.2)
     os.write(m, b"\x03")
     time.sleep(0.3)
+    checks.report()
 
 
 if __name__ == "__main__":

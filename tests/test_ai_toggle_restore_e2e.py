@@ -1,26 +1,12 @@
 """End-to-end: fill the screen, toggle the AI panel on and off, and confirm the
 user screen returns to its exact prior state (including trailing blank lines)."""
 
-import errno, fcntl, os, pty, select, struct, termios, time
+import fcntl, os, pty, struct, termios, time
 import pyte
 
+from e2e_util import Checks, ludvart_argv, screen_text, wait_for, wait_until_started
+
 ROWS, COLS = 24, 90
-
-
-def pump(fd, stream, seconds):
-    end = time.time() + seconds
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if fd in r:
-            try:
-                d = os.read(fd, 65536)
-            except OSError as e:
-                if e.errno == errno.EIO:
-                    break
-                raise
-            if not d:
-                break
-            stream.feed(d)
 
 
 def disp(screen):
@@ -32,15 +18,18 @@ def main():
     if pid == 0:
         os.environ["PS1"] = "$ "
         os.environ["TERM"] = "xterm"
-        os.execvp("ludvart", ["ludvart", "--", "bash", "--norc", "-i"])
+        argv = ludvart_argv()
+        os.execvp(argv[0], argv)
     fcntl.ioctl(m, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    checks = Checks()
 
-    pump(m, stream, 6)
+    checks.add("ludvart finished starting up", wait_until_started(m, stream.feed, screen))
     # Fill the screen with numbered lines.
     os.write(m, b"for i in $(seq 1 40); do echo filler_line_$i; done\r")
-    pump(m, stream, 3)
+    filled = wait_for(m, stream.feed, lambda: "filler_line_40" in screen_text(screen), 15, settle=0.5)
+    checks.add("screen filled with output", filled)
     before = disp(screen)
     print("== before toggle ==")
     for r in before:
@@ -48,9 +37,11 @@ def main():
             print(r)
 
     os.write(m, b"\x0f")   # Ctrl-O open
-    pump(m, stream, 2)
+    opened = wait_for(m, stream.feed, lambda: "^O/Esc:close" in screen_text(screen), 10, settle=0.3)
+    checks.add("panel opened", opened)
     os.write(m, b"\x0f")   # Ctrl-O close
-    pump(m, stream, 2)
+    closed = wait_for(m, stream.feed, lambda: "^O/Esc:close" not in screen_text(screen), 10, settle=0.3)
+    checks.add("panel closed", closed)
     after = disp(screen)
 
     print("\n== after toggle ==")
@@ -58,15 +49,15 @@ def main():
         if r:
             print(r)
 
-    match = before == after
-    print("\nRESULT:", "PASS" if match else "FAIL")
-    if not match:
+    if before != after:
         for i, (b, a) in enumerate(zip(before, after)):
             if b != a:
                 print(f"  row {i}: before={b!r} after={a!r}")
+    checks.add("screen restored exactly after toggle", before == after)
 
     os.write(m, b"\x03")
     time.sleep(0.3)
+    checks.report()
 
 
 if __name__ == "__main__":
