@@ -10,6 +10,7 @@ import sys
 from .models import (
     PROVIDER_MENU,
     Registration,
+    SERVICE_PROMPT,
     add_registration,
     label,
     load_registry,
@@ -196,10 +197,7 @@ def _run_setup_wizard() -> bool:
 
     try:
         # 0) Service name -- an arbitrary label for who provides access.
-        service = input(
-            "Service name -- who provides access (arbitrary, e.g. 'work', "
-            "'personal'): "
-        ).strip()
+        service = input(SERVICE_PROMPT + " ").strip()
 
         # 1) Endpoint type.
         sys.stderr.write("Select the API endpoint type:\n")

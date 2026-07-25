@@ -55,6 +55,15 @@ PROVIDER_MENU: tuple[tuple[str, str, str], ...] = (
     ("copilot", "GitHub Copilot (via local LiteLLM gateway)", ""),
 )
 
+#: Prompt for the free-form "service" label, shared by the CLI setup wizard and
+#: the in-panel ``/model add`` flow so the two stay worded identically. Callers
+#: append their own separator (a space for a CLI prompt, nothing for a panel
+#: line).
+SERVICE_PROMPT = (
+    "Service name -- who provides access (arbitrary, e.g. github, azure, "
+    "openrouter, etc.):"
+)
+
 
 def models_path() -> str:
     """Path of the model registry file.

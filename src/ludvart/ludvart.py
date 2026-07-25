@@ -54,7 +54,12 @@ from .session import (
     working_history,
 )
 from .llm import ToolSpec
-from .models import PROVIDER_MENU, find_registration, label as model_label
+from .models import (
+    PROVIDER_MENU,
+    SERVICE_PROMPT,
+    find_registration,
+    label as model_label,
+)
 
 if TYPE_CHECKING:
     from .llm import LLMClient, ToolCall
@@ -1924,10 +1929,7 @@ class Ludvart:
         if self._models is None and self._backend_client is None:
             return
         panel.add_system("Add a model (type 'cancel' at any prompt to abort).")
-        panel.add_system(
-            "Service name -- who provides access (arbitrary, e.g. 'work', "
-            "'personal', 'aws-bedrock'):"
-        )
+        panel.add_system(SERVICE_PROMPT)
         self._model_add = {"step": "service", "data": {}}
         self._render_split()
 
