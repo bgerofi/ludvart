@@ -476,7 +476,21 @@ def _do_model_use(token: str, manager, core, channel: FrameChannel, emit) -> Non
     def status(note: str) -> None:
         channel.send(message(MsgType.PANEL_UPDATE, kind="activity", label=note))
 
-    ok, msg = manager.use(idx, status=status)
+    def before_swap(new_client) -> None:
+        # Runs while the *old* model is still active. If the conversation would
+        # overflow the target model's (possibly smaller) window, compact it here
+        # -- using the outgoing model, which can still hold the full history --
+        # before the swap tears that model down.
+        new_cw = getattr(new_client, "context_window", 0) or 0
+        if (
+            new_cw > 0
+            and core.last_input_tokens
+            and len(core.history) > 2
+            and 100.0 * core.last_input_tokens / new_cw >= core.CONTEXT_COMPACT_PCT
+        ):
+            core.compact()
+
+    ok, msg = manager.use(idx, status=status, before_swap=before_swap)
     emit(msg)
     if ok:
         core.llm = manager.client
@@ -564,6 +578,9 @@ def serve(
         session=session,
         mcp=mcp,
     )
+    # The client owns no model, so lend it the active one for the one-shot
+    # calls it makes while serving our requests (the settle detector).
+    host.llm_provider = lambda: core.llm
     channel.send(
         message(
             MsgType.HELLO,

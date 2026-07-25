@@ -24,11 +24,10 @@ from ludvart.llm import (  # noqa: E402
     ToolCall,
     ToolSpec,
     Turn,
-    usage_from_response,
 )
+from ludvart.agent_core import AgentCore  # noqa: E402
 from ludvart.panel import AiPanel  # noqa: E402
-from ludvart.ludvart import Ludvart  # noqa: E402
-from ludvart.session import SessionStore  # noqa: E402
+from ludvart.ludvart import Ludvart, _ClientTerminalHost  # noqa: E402
 
 
 # -- base converse feeds on_text -------------------------------------------
@@ -349,7 +348,7 @@ def test_panel_renders_interim_line():
     print("panel renders interim line: OK")
 
 
-# -- ludvart wiring: interim refreshed per turn, cleared on finish -----------
+# -- agent loop wiring: interim refreshed per turn, cleared on finish --------
 
 
 class _StreamingLLM:
@@ -397,26 +396,38 @@ def _make_ludvart(root: Path) -> Ludvart:
     r._panel = AiPanel(cols=80, height=8, provider="fake")
     r._phys_rows, r._phys_cols = 24, 80
     r._render_split = lambda: None
-    r._session = SessionStore()
     r.snapshot_text = lambda: "SCREEN"
-    r.llm = _StreamingLLM(r)
     return r
 
 
-def test_ludvart_streams_and_clears_interim(tmp_path: Path):
+def test_streamed_narration_reaches_the_panel_and_is_cleared(tmp_path: Path):
+    """Streamed text lands in the panel's interim line and is cleared on finish.
+
+    The loop runs in the backend and narrates through the host; here the real
+    :class:`_ClientTerminalHost` is driven directly so the assertions are on the
+    live panel without the protocol's asynchrony.
+    """
     r = _make_ludvart(tmp_path)
     panel = r._panel
+    llm = _StreamingLLM(r)
+    core = AgentCore(
+        llm,
+        _ClientTerminalHost(r),
+        system_prompt="SYS",
+        tools=[ToolSpec(name="b64_encode", description="d",
+                        input_schema={"type": "object"})],
+    )
 
-    result = r._ask_llm("what is on screen?")
+    result = core.run_turn("what is on screen?", "SCREEN")
     assert result == "final answer is 42", result
 
     # The first turn begins with a cleared interim; the second begins with the
     # running narration from the first turn -- its streamed reasoning AND its
     # tool-call note -- so nothing vanishes between tool round-trips.
-    assert r.llm.interim_at_entry == [
+    assert llm.interim_at_entry == [
         "",
         "step one narration\n\u2192 b64_encode(text='hi')",
-    ], r.llm.interim_at_entry
+    ], llm.interim_at_entry
     # After the last streamed turn, interim shows the full history above the
     # final streamed narration...
     assert panel.interim == (
@@ -430,7 +441,7 @@ def test_ludvart_streams_and_clears_interim(tmp_path: Path):
     r._finish_ask()
     assert panel.interim == "", panel.interim
     assert panel.messages[-1] == ("ludvart", "final answer is 42"), panel.messages[-1]
-    print("ludvart streams and clears interim: OK")
+    print("streamed narration reaches the panel and is cleared: OK")
 
 
 def main():
@@ -447,7 +458,7 @@ def main():
     test_anthropic_sanitizes_stored_whitespace_history()
     test_panel_renders_interim_line()
     with tempfile.TemporaryDirectory() as d:
-        test_ludvart_streams_and_clears_interim(Path(d))
+        test_streamed_narration_reaches_the_panel_and_is_cleared(Path(d))
     print("ALL streaming/interim tests passed.")
 
 

@@ -16,12 +16,11 @@ Run:
 
 import os
 import subprocess
-import sys
 import threading
 
 from ludvart.backend_client import BackendClient
 from ludvart.protocol import FrameChannel
-from ludvart.server import _FakeBackendLLM, serve
+from ludvart.server import _do_model_use, _FakeBackendLLM, serve
 from ludvart.terminal_host import TerminalHost
 from ludvart.transport import local_backend
 
@@ -183,6 +182,13 @@ def test_hello_reports_model_label_and_verification():
     print("HELLO carries the active model label and verification status: OK")
 
 
+class _Window:
+    """Stands in for the incoming client, which ``before_swap`` only sizes."""
+
+    def __init__(self, context_window):
+        self.context_window = context_window
+
+
 class _FakeManager:
     """A minimal ModelManager stand-in for /model command tests."""
 
@@ -193,6 +199,7 @@ class _FakeManager:
         ]
         self.available = [True, True]
         self.client = _FakeBackendLLM()
+        self.new_context_window = 0
         self.used = []
         self.added = []
         self.removed = []
@@ -212,10 +219,13 @@ class _FakeManager:
     def use(self, index, *, status=None, before_swap=None):
         if status:
             status("starting gateway")
+        new_client = _Window(self.new_context_window)
+        if before_swap is not None:
+            before_swap(new_client)
         for i, m in enumerate(self.models):
             m["active"] = i == index
         self.used.append(index)
-        self.client = _FakeBackendLLM()
+        self.client = new_client
         return True, f"Now using model {index + 1}."
 
     def add(self, reg, *, status=None):
@@ -269,6 +279,64 @@ def test_model_use_command_switches_backend_model():
     # The client learns the new active label via a set_model notification.
     assert host.model_label == "anthropic:claude-y", host.model_label
     print("/model use switches the backend active model and label: OK")
+
+
+class _SwitchCore:
+    """A minimal AgentCore stand-in for the model-switch compaction check."""
+
+    CONTEXT_COMPACT_PCT = 80.0
+
+    def __init__(self, tokens, turns):
+        self.last_input_tokens = tokens
+        self.history = [{"role": "user", "content": "q"}] * turns
+        self.llm = None
+        self.compacted = 0
+
+    def compact(self):
+        self.compacted += 1
+        return "SUMMARY"
+
+
+def _switch_model(manager, core):
+    """Call the backend's /model use handler directly and collect its output."""
+    systems = []
+    sent = []
+
+    class _Ch:
+        def send(self, msg):
+            sent.append(msg)
+
+    _do_model_use("2", manager, core, _Ch(), systems.append)
+    return sent
+
+
+def test_switch_recomputes_the_badge_for_the_new_window():
+    manager = _FakeManager()
+    manager.new_context_window = 200_000
+    core = _SwitchCore(tokens=20_000, turns=1)
+    sent = _switch_model(manager, core)
+    pcts = [m["pct"] for m in sent if m.get("kind") == "context"]
+    assert pcts == [10.0], pcts  # 20k of the new 200k window
+    assert core.compacted == 0
+    print("model switch recomputes the badge for the new window: OK")
+
+
+def test_switch_compacts_when_the_new_window_is_too_small():
+    manager = _FakeManager()
+    manager.new_context_window = 1_000  # 900 tokens would be 90% of it
+    core = _SwitchCore(tokens=900, turns=3)
+    _switch_model(manager, core)
+    assert core.compacted == 1, "expected compaction before the smaller model"
+    print("model switch compacts when the new window is too small: OK")
+
+
+def test_switch_skips_compaction_when_the_history_fits():
+    manager = _FakeManager()
+    manager.new_context_window = 200_000
+    core = _SwitchCore(tokens=1_000, turns=3)
+    _switch_model(manager, core)
+    assert core.compacted == 0
+    print("model switch skips compaction when the history fits: OK")
 
 
 def test_model_add_command_over_backend():
@@ -440,6 +508,9 @@ def main():
     test_hello_reports_model_label_and_verification()
     test_model_list_command_over_backend()
     test_model_use_command_switches_backend_model()
+    test_switch_recomputes_the_badge_for_the_new_window()
+    test_switch_compacts_when_the_new_window_is_too_small()
+    test_switch_skips_compaction_when_the_history_fits()
     test_model_add_command_over_backend()
     test_model_remove_command_over_backend()
     test_model_copilot_models_query_over_backend()

@@ -72,6 +72,13 @@ class MsgType:
     REQUEST = "request"
     #: C->B: the result of a REQUEST, keyed by the same call_id.
     RESPONSE = "response"
+    #: C->B: a value-returning call on the backend, made *while* the client is
+    #: serving a REQUEST (the backend is blocked waiting, so the channel is
+    #: free). Used for work that needs the backend's model but the client's
+    #: screen, e.g. the settle detector's out-of-band status check.
+    BACKEND_REQUEST = "backend_request"
+    #: B->C: the result of a BACKEND_REQUEST, keyed by the same call_id.
+    BACKEND_RESPONSE = "backend_response"
     #: B->C: the final assistant reply that ends one submitted turn.
     REPLY = "reply"
     #: B->C: structured panel-state update for the client to render.

@@ -48,6 +48,23 @@ def neutral_tool_result(call: ToolCall, output: str) -> dict:
     }
 
 
+def tool_call_note(call: ToolCall) -> str:
+    """One-line summary of a tool invocation for the live narration.
+
+    Appended to the transient narration so the user can see the running history
+    of what the agent is doing -- including fast tools like
+    ``capture_screen_history`` whose "Calling ..." label would flash by faster
+    than a render frame. String arguments are quoted (so control characters
+    injected via ``inject_input`` show up as escapes) and long values truncated.
+    """
+    parts: list[str] = []
+    for key, val in call.input.items():
+        if isinstance(val, str) and len(val) > 60:
+            val = val[:57] + "\u2026"
+        parts.append(f"{key}={val!r}")
+    return f"\u2192 {call.name}(" + ", ".join(parts) + ")"
+
+
 class AgentCore:
     """Runs the agent loop for one conversation against a :class:`TerminalHost`.
 
@@ -122,6 +139,24 @@ class AgentCore:
         self.history.append({"role": "user", "content": user_content})
         system = {"role": "system", "content": self.system_prompt}
 
+        # Running narration for this ask. Streamed commentary and one note per
+        # tool call accumulate here so the transient interim line keeps showing
+        # what the agent has been doing across tool round-trips, instead of each
+        # request's stream overwriting the previous one.
+        narration: list[str] = []
+        last_stream = ""
+
+        def compose(streamed: str = "") -> str:
+            parts = list(narration)
+            if streamed:
+                parts.append(streamed)
+            return "\n".join(parts)
+
+        def on_text(text: str) -> None:
+            nonlocal last_stream
+            last_stream = text
+            self.host.narrate(compose(text))
+
         while True:
             # Compact before EVERY request, not just once per user turn: one
             # agentic turn can issue many tool round-trips and each re-sends the
@@ -129,11 +164,12 @@ class AgentCore:
             # inside this loop.
             self.maybe_compact()
             self.host.set_activity("Thinking")
+            last_stream = ""
             turn = self.llm.converse(
                 [system, *self._build_context()],
                 tools=self.tools or None,
                 max_tokens=self.max_tokens,
-                on_text=self.host.narrate,
+                on_text=on_text,
             )
             self.history.append(neutral_assistant(turn))
             self._report_usage(turn)
@@ -141,7 +177,13 @@ class AgentCore:
                 self.transcript.append(("ludvart", turn.text))
                 self._persist()
                 return turn.text
+            # Keep this request's streamed commentary in the narration (above
+            # the tool notes) so it stays visible through the tool round-trips.
+            if last_stream:
+                narration.append(last_stream)
             for call in turn.tool_calls:
+                narration.append(tool_call_note(call))
+                self.host.narrate(compose())
                 self.host.set_activity(f"Calling {call.name}")
                 output = self._run_tool(call)
                 self.history.append(neutral_tool_result(call, output))

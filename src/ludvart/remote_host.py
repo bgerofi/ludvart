@@ -25,9 +25,13 @@ class RemoteTerminalHost(TerminalHost):
     prompt) and replies before the loop proceeds.
     """
 
-    def __init__(self, channel: FrameChannel) -> None:
+    def __init__(self, channel: FrameChannel, llm_provider=None) -> None:
         self._channel = channel
         self._counter = 0
+        #: Resolves the backend's active model, lent to the client for one-shot
+        #: calls it cannot make itself (it owns no LLM). Called per request so a
+        #: mid-session ``/model use`` is picked up. ``None`` disables them.
+        self.llm_provider = llm_provider
 
     # -- value-returning calls (request/response) ---------------------------
 
@@ -53,11 +57,39 @@ class RemoteTerminalHost(TerminalHost):
                 )
             if msg_type(msg) == MsgType.RESPONSE and msg.get("call_id") == call_id:
                 return msg.get("result")
+            if msg_type(msg) == MsgType.BACKEND_REQUEST:
+                # A nested call from the client while it serves our request
+                # (e.g. the settle detector borrowing our model). Answer it and
+                # keep waiting for the response we are actually blocked on.
+                self._serve_backend_request(msg)
+                continue
             # The client answers requests in order and sends nothing else while a
             # request is outstanding, so anything else here is a protocol error.
             raise ConnectionError(
                 f"expected response {call_id!r}, got {msg_type(msg)!r}"
             )
+
+    def _serve_backend_request(self, msg: dict) -> None:
+        """Run one client-initiated call on the backend and reply."""
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        result = None
+        llm = self.llm_provider() if self.llm_provider is not None else None
+        if method == "complete" and llm is not None:
+            try:
+                result = llm.complete(
+                    list(params.get("messages") or []),
+                    max_tokens=int(params.get("max_tokens") or 64),
+                )
+            except Exception:  # noqa: BLE001 - the caller decides what to do
+                result = None
+        self._channel.send(
+            message(
+                MsgType.BACKEND_RESPONSE,
+                call_id=msg.get("call_id"),
+                result=result,
+            )
+        )
 
     # -- one-way UI notifications -------------------------------------------
 

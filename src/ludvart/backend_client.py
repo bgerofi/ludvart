@@ -157,6 +157,7 @@ class BackendClient:
     ) -> None:
         self._channel = channel
         self._reconnector = reconnector
+        self._counter = 0
 
     def ask(self, question: str, snapshot: str, host: TerminalHost) -> str:
         """Submit ``question`` (with ``snapshot``) and return the reply text."""
@@ -195,6 +196,37 @@ class BackendClient:
             return self._pump(host).get("payload") or {}
 
         return self._run(attempt, host)
+
+    def backend_request(self, method: str, params: dict):
+        """Call the backend from inside a request we are currently serving.
+
+        Only legal while the client is executing a ``REQUEST`` (a terminal tool
+        or a snapshot): the backend is blocked waiting for our ``RESPONSE``, so
+        the channel is free for this one nested round-trip. Used for work that
+        needs the backend's model but the client's screen. Returns ``None`` if
+        the backend could not produce a result.
+        """
+        self._counter += 1
+        call_id = f"c{self._counter}"
+        self._channel.send(
+            message(
+                MsgType.BACKEND_REQUEST,
+                call_id=call_id,
+                method=method,
+                params=params,
+            )
+        )
+        msg = self._channel.recv()
+        if msg is None:
+            raise ConnectionError("backend disconnected during a nested request")
+        if (
+            msg_type(msg) != MsgType.BACKEND_RESPONSE
+            or msg.get("call_id") != call_id
+        ):
+            raise ConnectionError(
+                f"expected backend response {call_id!r}, got {msg_type(msg)!r}"
+            )
+        return msg.get("result")
 
     def _run(self, attempt: Callable[[], object], host: TerminalHost):
         """Run ``attempt``; on a dropped connection, reconnect once and retry."""

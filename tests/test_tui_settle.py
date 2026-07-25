@@ -15,7 +15,6 @@ Run: python3 tools/test_tui_settle.py   (exit 0 = pass)
 import os
 import sys
 import time
-import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -30,7 +29,7 @@ class FakeScreen:
 def make_relay(in_alt_screen, texts):
     """Build a RelayPTY without running __init__ (no PTY, no threads)."""
     relay = RelayPTY.__new__(RelayPTY)
-    relay.llm = None  # if the LLM path were taken this would short-circuit True
+    relay._backend_client = None  # if the model path were taken it short-circuits
     relay.screen = FakeScreen(in_alt_screen)
     # Feed a deterministic sequence of snapshots: it changes once, then stays
     # constant so the quiescence window elapses.
@@ -74,46 +73,50 @@ def test_caps_are_sane():
 
 # (test runner is defined at the end of this file, after all test functions)
 def test_injection_finished_receives_before_and_after():
-    """The LLM status check must be shown BEFORE, injected input, and AFTER."""
+    """The status check must be shown BEFORE, injected input, and AFTER."""
     captured = {}
 
-    class FakeLLM:
-        name = "fake"
-        model = "m"
-
-        def complete(self, messages, max_tokens=8):
+    class FakeBackend:
+        def backend_request(self, method, params):
+            captured["method"] = method
+            messages = params["messages"]
             captured["system"] = messages[0]["content"]
             captured["user"] = messages[1]["content"]
             return "DONE"
 
     relay = RelayPTY.__new__(RelayPTY)
-    relay.llm = FakeLLM()
+    relay._backend_client = FakeBackend()
     out = relay._injection_finished(
         "\x01n", screen_text="AFTER-CONTENT", before_text="BEFORE-CONTENT"
     )
     assert out is True, out
+    assert captured["method"] == "complete", captured["method"]
     u = captured["user"]
     assert "BEFORE-CONTENT" in u, u
     assert "AFTER-CONTENT" in u, u
     assert "BEFORE" in u and "AFTER" in u
-    # The injected input repr must be present so the LLM knows what was sent.
+    # The injected input repr must be present so the model knows what was sent.
     assert "\\x01n" in u or "x01n" in u, u
-    print("ok: _injection_finished sends before + injected + after to the LLM")
+    print("ok: _injection_finished sends before + injected + after to the model")
 
 
 def test_injection_finished_running_keeps_waiting():
-    class FakeLLM:
-        name = "fake"
-        model = "m"
-
-        def complete(self, messages, max_tokens=8):
+    class FakeBackend:
+        def backend_request(self, method, params):
             return "RUNNING"
 
     relay = RelayPTY.__new__(RelayPTY)
-    relay.llm = FakeLLM()
+    relay._backend_client = FakeBackend()
     out = relay._injection_finished("x", "after", "before")
     assert out is False, out
     print("ok: RUNNING verdict keeps waiting")
+
+
+def test_injection_finished_without_a_backend_does_not_hang():
+    relay = RelayPTY.__new__(RelayPTY)
+    relay._backend_client = None
+    assert relay._injection_finished("x", "after", "before") is True
+    print("ok: no backend -> reports finished")
 
 
 if __name__ == "__main__":
@@ -121,4 +124,5 @@ if __name__ == "__main__":
     test_tui_returns_fast_without_prompt_or_llm()
     test_injection_finished_receives_before_and_after()
     test_injection_finished_running_keeps_waiting()
+    test_injection_finished_without_a_backend_does_not_hang()
     print("ALL PASS")
