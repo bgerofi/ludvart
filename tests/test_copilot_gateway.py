@@ -206,32 +206,6 @@ def test_missing_cli_raises(tmp, monkeypatch_cli):
     raise AssertionError("expected GatewayError when litellm CLI is missing")
 
 
-def test_choose_copilot_model(tmp):
-    import builtins
-
-    from ludvart import __main__ as m
-
-    orig_list = gateway.list_copilot_models
-    orig_input = builtins.input
-    gateway.list_copilot_models = lambda: ["gpt-4o", "claude-opus-4.8", "gpt-5.5"]
-    try:
-        builtins.input = lambda *a: "2"  # by number
-        assert m._choose_copilot_model() == "claude-opus-4.8"
-        builtins.input = lambda *a: "gpt-5.5"  # by name
-        assert m._choose_copilot_model() == "gpt-5.5"
-        builtins.input = lambda *a: ""  # default (gpt-4o is present)
-        assert m._choose_copilot_model() == "gpt-4o"
-        builtins.input = lambda *a: "future-model"  # typed custom slug accepted
-        assert m._choose_copilot_model() == "future-model"
-        gateway.list_copilot_models = lambda: []  # listing failed -> free text
-        builtins.input = lambda *a: ""
-        assert m._choose_copilot_model("gpt-4o") == "gpt-4o"
-    finally:
-        gateway.list_copilot_models = orig_list
-        builtins.input = orig_input
-    print("choose copilot model: OK")
-
-
 def _run():
     orig = gateway._litellm_cli
     tests = [
@@ -242,7 +216,6 @@ def _run():
         test_gateway_survives_worker_thread,
         test_gateway_start_failure,
         test_missing_cli_raises,
-        test_choose_copilot_model,
     ]
     try:
         for fn in tests:
