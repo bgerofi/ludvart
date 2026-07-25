@@ -129,6 +129,25 @@ class _FakeBackendLLM(LLMClient):
         )
 
 
+def _manager_or_setup(status=None):
+    """Activate the registered model, or report that setup is still needed.
+
+    Returns ``(manager, verify_error, needs_setup)``. An empty registry is not
+    an error: the backend cannot prompt for anything (its stdin/stdout carry the
+    protocol), so it hands back a manager over the empty registry and lets the
+    client drive registration. ``/model add`` then works normally and the first
+    model added becomes the active one.
+    """
+    from .backend import ModelManager
+    from .models import load_registry
+
+    models = load_registry()
+    if not models:
+        return ModelManager(models, [], None), None, True
+    manager, verify_error = _build_manager(status=status)
+    return manager, verify_error, False
+
+
 def _build_manager(status=None):
     """Activate the registered model on the backend, capturing verification.
 
@@ -269,7 +288,7 @@ def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None
         if not payload:
             emit("Model add is started from the client's guided prompts.")
         else:
-            _do_model_add(payload, manager, channel, emit)
+            _do_model_add(payload, manager, core, channel, emit)
     else:
         emit(f"Supported: list, use, add, remove (got {sub!r}).")
     return None
@@ -303,12 +322,16 @@ def _do_model_remove(token: str, manager, emit) -> None:
     emit(msg)
 
 
-def _do_model_add(reg, manager, channel: FrameChannel, emit) -> None:
+def _do_model_add(reg, manager, core, channel: FrameChannel, emit) -> None:
     def status(note: str) -> None:
         channel.send(message(MsgType.PANEL_UPDATE, kind="activity", label=note))
 
-    _ok, msg = manager.add(reg, status=status)
+    ok, msg = manager.add(reg, status=status)
     emit(msg)
+    if ok and manager.active_index() is None:
+        # First model on a fresh backend: adding it is also what puts the
+        # backend into service, so activate it instead of leaving it idle.
+        _do_model_use(str(len(manager.models)), manager, core, channel, emit)
 
 
 def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
@@ -473,6 +496,7 @@ def serve(
     it is created automatically only on the real path so tests stay hermetic.
     """
     verify_error = None
+    needs_setup = False
     if manager is not None:
         client = manager.client
         active_label = _manager_active_label(manager)
@@ -489,9 +513,16 @@ def serve(
         def _startup(msg: str) -> None:
             channel.send(message(MsgType.LOG, text=msg))
 
-        manager, verify_error = _build_manager(status=_startup)
-        client = manager.client
-        active_label = _manager_active_label(manager)
+        manager, verify_error, needs_setup = _manager_or_setup(status=_startup)
+        if needs_setup:
+            # Nothing registered here yet. Serve anyway with no active client:
+            # the client is told to run its registration flow, and the first
+            # /model add both registers and activates a model.
+            client = None
+            active_label = ""
+        else:
+            client = manager.client
+            active_label = _manager_active_label(manager)
         if session is None:
             from .session import SessionStore
 
@@ -512,8 +543,9 @@ def serve(
             app="ludvart",
             protocol=1,
             active_label=active_label,
-            verified=verify_error is None,
+            verified=verify_error is None and not needs_setup,
             verify_error=verify_error,
+            needs_setup=needs_setup,
             session_id=getattr(session, "session_id", None),
         )
     )
@@ -527,6 +559,13 @@ def serve(
         if kind == MsgType.SUBMIT:
             text = msg.get("text", "")
             snapshot = msg.get("snapshot", "")
+            if core.llm is None:
+                reply = (
+                    "[ludvart] no model is registered on the backend yet. "
+                    "Use /model add to register one."
+                )
+                channel.send(message(MsgType.REPLY, text=reply))
+                continue
             try:
                 reply = core.run_turn(text, snapshot)
             except ConnectionError:
@@ -549,6 +588,11 @@ def serve_main(argv: Sequence[str] | None = None) -> int:
     Reads frames from stdin and writes them to stdout; nothing else may touch
     stdout or the protocol stream is corrupted.
     """
+    from .llm import ensure_context_windows_file
+
+    # The backend owns every model concern now, including the editable
+    # context-window table, so seed it here rather than on the client.
+    ensure_context_windows_file()
     reader = sys.stdin.buffer
     writer = sys.stdout.buffer
     channel = FrameChannel(reader, writer, max_frame=DEFAULT_MAX_FRAME)

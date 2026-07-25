@@ -5,23 +5,14 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
-import signal
 import sys
 
-from .backend import Backend, ModelManager, build_backend, verify_backend
-from .llm import (
-    build_client,
-    ensure_context_windows_file,
-)
 from .models import (
     PROVIDER_MENU,
     Registration,
-    active_index,
     add_registration,
-    is_copilot,
     label,
     load_registry,
-    registration_to_config,
     save_models,
 )
 from .ludvart import DEFAULT_PREFIX, Ludvart
@@ -44,37 +35,6 @@ def _parse_prefix(spec: str) -> bytes:
     raise argparse.ArgumentTypeError(
         f"invalid prefix {spec!r}; use e.g. 'C-g', 'ctrl-g', '^g', or '\\x07'"
     )
-
-
-def _install_gateway_shutdown_handlers(get_gateway):
-    """Install best effort signal handlers that stop a running gateway."""
-    handlers = []
-
-    def _handler(signum, _frame):
-        gw = get_gateway()
-        if gw is not None:
-            gw.stop()
-        raise SystemExit(128 + int(signum))
-
-    for sig_name in ("SIGTERM", "SIGHUP"):
-        sig = getattr(signal, sig_name, None)
-        if sig is None:
-            continue
-        try:
-            prev = signal.getsignal(sig)
-            signal.signal(sig, _handler)
-            handlers.append((sig, prev))
-        except Exception:
-            pass
-    return handlers
-
-
-def _restore_handlers(handlers) -> None:
-    for sig, prev in handlers:
-        try:
-            signal.signal(sig, prev)
-        except Exception:
-            pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,12 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--backend",
         metavar="SPEC",
-        default=None,
+        default="local",
         help=(
-            "Run the agent loop in a separate backend process. 'local' forks it "
-            "on this host; 'host:folder' runs it on an SSH-reachable host from "
-            "the ludvart checkout at 'folder' (which has a .venv). The terminal "
-            "stays local; only structured messages cross the link."
+            "Where the agent loop runs. 'local' (the default) forks it on this "
+            "host and talks to it over a pipe; 'host:folder' runs it on an "
+            "SSH-reachable host from the ludvart checkout at 'folder' (which "
+            "has a .venv). The terminal always stays local; only structured "
+            "messages cross the link."
         ),
     )
     parser.add_argument(
@@ -136,29 +97,16 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         command = [_default_shell()]
 
-    # Split mode: the agent loop runs in a backend process; the client keeps the
-    # terminal. No local model activation is needed (the backend owns the LLM).
-    if args.backend:
-        return _run_with_backend(args, command)
-
-    manager = None
-    if not args.no_llm:
-        manager = _setup_llm()
-
-    llm = manager.client if manager is not None else None
-    handlers = _install_gateway_shutdown_handlers(
-        lambda: manager.gateway if manager is not None else None
-    )
-    try:
-        return Ludvart(
-            command, prefix=args.prefix, llm=llm, model_manager=manager
-        ).run()
-    except KeyboardInterrupt:
-        return 130
-    finally:
-        if manager is not None and manager.gateway is not None:
-            manager.gateway.stop()
-        _restore_handlers(handlers)
+    # The agent loop always runs in a backend process; this process only ever
+    # owns the terminal. A forked backend over a pipe and an SSH backend differ
+    # only in how they are spawned, so there is a single code path for both.
+    if args.no_llm:
+        # Plain relay: no agent loop at all, so there is no backend to place.
+        try:
+            return Ludvart(command, prefix=args.prefix).run()
+        except KeyboardInterrupt:
+            return 130
+    return _run_with_backend(args, command)
 
 
 def _run_with_backend(args, command: list[str]) -> int:
@@ -185,7 +133,12 @@ def _run_with_backend(args, command: list[str]) -> int:
         sys.stderr.write(f"ludvart: could not start backend: {exc}\n")
         return 2
     label = reconnector.label or "backend"
-    if reconnector.verified:
+    if reconnector.needs_setup:
+        sys.stderr.write(
+            "ludvart: no model registered yet; the panel will walk you "
+            "through it (prefix then 'a').\n"
+        )
+    elif reconnector.verified:
         sys.stderr.write(f"ludvart: backend model {label}... ok\n")
     else:
         err = reconnector.verify_error or "unknown error"
@@ -197,6 +150,7 @@ def _run_with_backend(args, command: list[str]) -> int:
             backend_channel=reconnector.channel,
             backend_label=label,
             backend_reconnector=reconnector,
+            backend_needs_setup=reconnector.needs_setup,
         ).run()
     except KeyboardInterrupt:
         return 130
@@ -212,138 +166,6 @@ def _backend_spawn(spec: str):
         return lambda: local_backend()
     host, folder = parse_backend_spec(spec)
     return lambda: ssh_backend(host, folder)
-
-
-def _setup_llm() -> ModelManager | None:
-    """Load the model registry, run first-time setup if empty, and activate it.
-
-    Models live in ``~/.ludvart/models.json`` (seeded once from any legacy
-    ``llm.conf`` / environment config). When the registry is empty and the
-    session is interactive, the setup wizard collects and registers the first
-    model. The active model is then built and verified; every other registered
-    model is verified too so ``/model list`` can show which are available.
-
-    Returns a :class:`~ludvart.backend.ModelManager` (its ``gateway`` must be
-    stopped on shutdown), or ``None`` when nothing is configured -- meaning
-    ludvart runs as a plain relay.
-    """
-    # Seed the editable context-window table on first run so users can tune it.
-    ensure_context_windows_file()
-
-    models = load_registry()
-    if not models:
-        if not _run_setup_wizard():
-            _report_plain_relay()
-            return None
-        models = load_registry()
-        if not models:
-            _report_plain_relay()
-            return None
-
-    return _activate_registry(models)
-
-
-def _activate_registry(models: list[Registration]) -> ModelManager | None:
-    """Build+verify the active model (verifying the rest for availability).
-
-    On a failed active-model check, the interactive session may add or re-enter
-    a model and retry; otherwise ludvart exits with an error.
-    """
-    while True:
-        idx = active_index(models)
-        assert idx is not None
-        active = models[idx]
-        saved_api_mode = active.get("api_mode")
-        backend: Backend | None = None
-        checking = False
-        # Whether a "starting the ... gateway..." progress line is still open
-        # and needs an "ok"/"FAILED" appended to close it.
-        gw_line = {"open": False}
-
-        def _status(m: str) -> None:
-            sys.stderr.write("ludvart: " + m + " ")
-            sys.stderr.flush()
-            gw_line["open"] = True
-
-        try:
-            # Build first (this is where the Copilot gateway is launched, if
-            # any) so its progress is reported before the verification step.
-            backend = build_backend(active, status=_status)
-            if gw_line["open"]:
-                sys.stderr.write("ok\n")
-                gw_line["open"] = False
-            sys.stderr.write(
-                f"ludvart: verifying {label(active)} (model {active['model']!r})... "
-            )
-            sys.stderr.flush()
-            checking = True
-            verify_backend(backend)
-        except Exception as exc:
-            if gw_line["open"] or checking:
-                sys.stderr.write("FAILED\n")
-            sys.stderr.write(f"ludvart: LLM check failed: {exc}\n")
-            if backend is not None:
-                backend.stop()
-            if sys.stdin.isatty() and _ask_yes_no(
-                "ludvart: add or re-enter an LLM model now?", default=True
-            ):
-                if _run_setup_wizard():
-                    models = load_registry()
-                    continue
-            sys.stderr.write("ludvart: fix the configuration or pass --no-llm.\n")
-            sys.exit(2)
-        sys.stderr.write("ok\n")
-        if active.get("api_mode") != saved_api_mode:
-            save_models(models)
-        available = _verify_others(models, idx)
-        available[idx] = True
-        return ModelManager(models, available, backend.client, backend.gateway)
-
-
-def _verify_others(models: list[Registration], active_idx: int) -> list[bool]:
-    """Verify every non-active model sequentially; return an availability list.
-
-    Direct providers are checked with a tiny request. Copilot models aren't
-    started here (that needs the gateway); they are marked available when the
-    gateway is installed and authorized, and truly verified on ``/model use``.
-    """
-    available = [False] * len(models)
-    for i, reg in enumerate(models):
-        if i == active_idx:
-            available[i] = True
-            continue
-        sys.stderr.write(f"ludvart: verifying {label(reg)}... ")
-        sys.stderr.flush()
-        if is_copilot(reg):
-            ok = _copilot_ready()
-            available[i] = ok
-            sys.stderr.write("ok\n" if ok else "unavailable\n")
-            continue
-        try:
-            client = build_client(registration_to_config(reg))
-            client.verify()
-            available[i] = True
-            sys.stderr.write("ok\n")
-        except Exception as exc:
-            available[i] = False
-            sys.stderr.write(f"unavailable ({exc})\n")
-    return available
-
-
-def _copilot_ready() -> bool:
-    """Whether a Copilot backend could start (installed + authorized)."""
-    from .gateway import copilot_authenticated, litellm_available
-
-    return litellm_available() and copilot_authenticated()
-
-
-def _report_plain_relay() -> None:
-    sys.stderr.write(
-        "ludvart: no LLM model registered. Running as a plain relay.\n"
-        "       Register one interactively (re-run in a terminal), or set\n"
-        "       {OPENAI,ANTHROPIC,GOOGLE,CUSTOM}_API_URL/_API_KEY/_MODEL, or\n"
-        "       pass --no-llm.\n"
-    )
 
 
 def _ask_yes_no(prompt: str, default: bool = True) -> bool:

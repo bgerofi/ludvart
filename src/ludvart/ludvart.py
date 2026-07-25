@@ -347,6 +347,7 @@ class Ludvart:
         backend_channel: "object | None" = None,
         backend_label: str | None = None,
         backend_reconnector: "object | None" = None,
+        backend_needs_setup: bool = False,
     ) -> None:
         self.command = list(command)
         self.prefix = prefix
@@ -369,6 +370,9 @@ class Ludvart:
         # Label shown for the backend's active model (updated by HELLO and by
         # a backend-side /model use).
         self._backend_label = backend_label
+        # The backend has an empty model registry and cannot prompt for one
+        # itself, so the panel starts the guided registration on first open.
+        self._backend_needs_setup = bool(backend_needs_setup)
         # Guided ``/model add`` input flow state (None unless collecting fields).
         self._model_add: dict | None = None
         self._child_pid: int = -1
@@ -813,10 +817,29 @@ class Ludvart:
         )
         self._render_split()
         self._maybe_start_mcp()
+        self._maybe_start_backend_setup()
         try:
             self._split_loop()
         finally:
             self._leave_split()
+
+    def _maybe_start_backend_setup(self) -> None:
+        """Run the guided registration when the backend has no model yet.
+
+        The backend's stdin/stdout carry the protocol, so it cannot ask for a
+        model itself; it advertises ``needs_setup`` in its HELLO and the panel
+        collects the fields here. The registration is then sent over the wire and
+        stored on the backend, which is what makes this work identically for a
+        forked and an SSH backend.
+        """
+        if not self._backend_needs_setup:
+            return
+        self._backend_needs_setup = False
+        panel = self._panel
+        if panel is None:
+            return
+        panel.add_system("No model is registered on the backend yet.")
+        self._model_add_start()
 
     def _maybe_start_mcp(self) -> None:
         """Discover external MCP tools once, the first time the panel opens.

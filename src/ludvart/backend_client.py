@@ -66,6 +66,7 @@ class BackendReconnector:
         self.session_id: str | None = None
         self.verified: bool = True
         self.verify_error: str | None = None
+        self.needs_setup: bool = False
 
     def connect(self, on_log: Callable[[str], None] | None = None) -> dict:
         """Spawn the backend and complete the HELLO handshake; return HELLO."""
@@ -76,6 +77,7 @@ class BackendReconnector:
         self.session_id = hello.get("session_id")
         self.verified = bool(hello.get("verified"))
         self.verify_error = hello.get("verify_error")
+        self.needs_setup = bool(hello.get("needs_setup"))
         return hello
 
     @property

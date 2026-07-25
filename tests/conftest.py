@@ -75,7 +75,21 @@ def monkeypatch_cli(monkeypatch: pytest.MonkeyPatch):
 # Collection of the ``main()``-style end-to-end scripts.
 # --------------------------------------------------------------------------- #
 def _llm_configured() -> bool:
-    """True when a provider is configured (env, llm.conf, or GitHub Copilot)."""
+    """True when a model is registered (or a legacy env/llm.conf provider is).
+
+    The registry in ``~/.ludvart/models.json`` is what a backend actually loads,
+    so it is checked first; without this the whole e2e suite silently skips on a
+    machine that is perfectly well configured.
+    """
+    try:
+        from ludvart.models import load_registry
+    except Exception:
+        return False
+    try:
+        if load_registry():
+            return True
+    except Exception:
+        pass
     try:
         from ludvart.llm import copilot_model, create_client
     except Exception:
