@@ -290,6 +290,13 @@ def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
         core.reset()
         core.session = SessionStore.create_new()
         channel.send(message(MsgType.PANEL_UPDATE, kind="transcript", messages=[]))
+        channel.send(
+            message(
+                MsgType.PANEL_UPDATE,
+                kind="session",
+                session_id=core.session.session_id,
+            )
+        )
         emit(f"Started new session {core.session.session_id}.")
     elif sub == "rename":
         parsed = parse_rename_args(" ".join(args[1:]))
@@ -351,6 +358,9 @@ def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:
             kind="transcript",
             messages=[list(m) for m in messages],
         )
+    )
+    channel.send(
+        message(MsgType.PANEL_UPDATE, kind="session", session_id=session_id)
     )
     emit(f"Loaded session {session_id} ({len(messages)} msgs).")
 
@@ -433,6 +443,7 @@ def serve(
             active_label=active_label,
             verified=verify_error is None,
             verify_error=verify_error,
+            session_id=getattr(session, "session_id", None),
         )
     )
     while True:

@@ -165,69 +165,53 @@ def _run_with_backend(args, command: list[str]) -> int:
     """Run a client session whose agent loop lives in a backend process.
 
     The backend is either forked locally (``--backend local``) or spawned on an
-    SSH-reachable host (``--backend host:folder``). The transport is always
-    closed on exit so the backend process is never leaked.
+    SSH-reachable host (``--backend host:folder``). A :class:`BackendReconnector`
+    owns the process so a dropped connection (e.g. a flaky SSH link) respawns it
+    and restores the session, with progress shown on the panel. The transport is
+    always closed on exit so the backend process is never leaked.
     """
-    from .transport import local_backend, parse_backend_spec, ssh_backend
+    from .backend_client import BackendReconnector
 
-    spec = args.backend
-    if spec == "local":
-        transport = local_backend()
-    else:
-        host, folder = parse_backend_spec(spec)
-        transport = ssh_backend(host, folder)
+    spawn = _backend_spawn(args.backend)
+
+    def _startup_log(text: str) -> None:
+        sys.stderr.write(f"ludvart: {text}\n")
+        sys.stderr.flush()
+
+    reconnector = BackendReconnector(spawn, on_log=_startup_log)
     try:
-        # The backend greets with HELLO carrying its active model + verification
-        # status; surface it the way the in-process startup reports verification.
-        label = _read_backend_hello(transport)
+        reconnector.connect()
+    except Exception as exc:  # noqa: BLE001 - report and exit
+        sys.stderr.write(f"ludvart: could not start backend: {exc}\n")
+        return 2
+    label = reconnector.label or "backend"
+    if reconnector.verified:
+        sys.stderr.write(f"ludvart: backend model {label}... ok\n")
+    else:
+        err = reconnector.verify_error or "unknown error"
+        sys.stderr.write(f"ludvart: backend model {label}... FAILED ({err})\n")
+    try:
         return Ludvart(
             command,
             prefix=args.prefix,
-            backend_channel=transport.channel,
+            backend_channel=reconnector.channel,
             backend_label=label,
+            backend_reconnector=reconnector,
         ).run()
     except KeyboardInterrupt:
         return 130
     finally:
-        transport.close()
+        reconnector.close()
 
 
-def _read_backend_hello(transport) -> str | None:
-    """Stream the backend's startup progress and read its HELLO frame.
+def _backend_spawn(spec: str):
+    """Return a zero-arg factory that spawns a fresh backend transport."""
+    from .transport import local_backend, parse_backend_spec, ssh_backend
 
-    Before HELLO the backend sends LOG frames for the gateway launch and each
-    model's verification; print them to stderr the way the in-process startup
-    reports verification. Returns the active model label (or ``None``). A
-    missing/blocking HELLO is non-fatal: the session still starts and errors
-    surface on the first ask.
-    """
-    from .protocol import MsgType
-
-    while True:
-        try:
-            msg = transport.channel.recv()
-        except Exception as exc:  # noqa: BLE001 - report, do not crash startup
-            sys.stderr.write(f"ludvart: backend handshake failed: {exc}\n")
-            return None
-        if not msg:
-            sys.stderr.write("ludvart: backend closed before handshake\n")
-            return None
-        kind = msg.get("type")
-        if kind == MsgType.LOG:
-            sys.stderr.write(f"ludvart: {msg.get('text', '')}\n")
-            sys.stderr.flush()
-            continue
-        if kind == MsgType.HELLO:
-            label = msg.get("active_label") or "backend"
-            if msg.get("verified"):
-                sys.stderr.write(f"ludvart: backend model {label}... ok\n")
-            else:
-                err = msg.get("verify_error") or "unknown error"
-                sys.stderr.write(f"ludvart: backend model {label}... FAILED ({err})\n")
-            return label
-        # Ignore any other pre-session frames.
-
-
+    if spec == "local":
+        return lambda: local_backend()
+    host, folder = parse_backend_spec(spec)
+    return lambda: ssh_backend(host, folder)
 
 
 def _setup_llm() -> ModelManager | None:

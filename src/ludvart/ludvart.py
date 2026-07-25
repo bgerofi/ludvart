@@ -331,6 +331,7 @@ class Ludvart:
         model_manager: "ModelManager | None" = None,
         backend_channel: "object | None" = None,
         backend_label: str | None = None,
+        backend_reconnector: "object | None" = None,
     ) -> None:
         self.command = list(command)
         self.prefix = prefix
@@ -347,7 +348,9 @@ class Ludvart:
         if backend_channel is not None:
             from .backend_client import BackendClient
 
-            self._backend_client = BackendClient(backend_channel)
+            self._backend_client = BackendClient(
+                backend_channel, reconnector=backend_reconnector
+            )
         # Label shown for the backend's active model (updated by HELLO and by
         # a backend-side /model use).
         self._backend_label = backend_label

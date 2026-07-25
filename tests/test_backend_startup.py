@@ -5,10 +5,7 @@ Run:
         && python tests/test_backend_startup.py
 """
 
-import contextlib
-import io
-
-from ludvart.__main__ import _read_backend_hello
+from ludvart.backend_client import read_hello
 
 
 class _FakeChannel:
@@ -19,12 +16,7 @@ class _FakeChannel:
         return self._frames.pop(0) if self._frames else None
 
 
-class _FakeTransport:
-    def __init__(self, frames):
-        self.channel = _FakeChannel(frames)
-
-
-def test_startup_streams_log_then_returns_label():
+def test_read_hello_streams_logs_then_returns_hello():
     frames = [
         {"type": "log", "text": "verifying copilot:opus (model 'x')..."},
         {"type": "log", "text": "starting the GitHub Copilot gateway (model 'x')..."},
@@ -36,22 +28,20 @@ def test_startup_streams_log_then_returns_label():
             "active_label": "copilot:opus",
             "verified": True,
             "verify_error": None,
+            "session_id": "2026-07-24/00_00_00",
         },
     ]
-    err = io.StringIO()
-    with contextlib.redirect_stderr(err):
-        label = _read_backend_hello(_FakeTransport(frames))
-    out = err.getvalue()
-    assert label == "copilot:opus", label
-    assert "starting the GitHub Copilot gateway" in out, out
-    assert "verifying anthropic:claude" in out, out
-    assert "backend model copilot:opus... ok" in out, out
-    print("startup streams gateway + verification logs, returns label: OK")
+    logs = []
+    hello = read_hello(_FakeChannel(frames), logs.append)
+    assert hello["active_label"] == "copilot:opus", hello
+    assert hello["session_id"] == "2026-07-24/00_00_00", hello
+    assert "starting the GitHub Copilot gateway (model 'x')..." in logs, logs
+    assert "verifying anthropic:claude..." in logs, logs
+    print("read_hello streams gateway + verification logs, returns hello: OK")
 
 
-def test_startup_reports_verification_failure():
+def test_read_hello_reports_verification_failure_in_dict():
     frames = [
-        {"type": "log", "text": "verifying copilot:opus (model 'x')..."},
         {"type": "log", "text": "copilot:opus: FAILED (boom)"},
         {
             "type": "hello",
@@ -60,31 +50,31 @@ def test_startup_reports_verification_failure():
             "verify_error": "boom",
         },
     ]
-    err = io.StringIO()
-    with contextlib.redirect_stderr(err):
-        label = _read_backend_hello(_FakeTransport(frames))
-    out = err.getvalue()
-    assert label == "copilot:opus"
-    assert "FAILED (boom)" in out, out
-    assert "backend model copilot:opus... FAILED (boom)" in out, out
-    print("startup surfaces a verification failure: OK")
+    logs = []
+    hello = read_hello(_FakeChannel(frames), logs.append)
+    assert hello["verified"] is False
+    assert hello["verify_error"] == "boom"
+    assert "copilot:opus: FAILED (boom)" in logs
+    print("read_hello surfaces a verification failure in the HELLO dict: OK")
 
 
-def test_startup_handles_early_close():
-    err = io.StringIO()
-    with contextlib.redirect_stderr(err):
-        label = _read_backend_hello(_FakeTransport([]))
-    assert label is None
-    assert "closed before handshake" in err.getvalue()
-    print("startup handles a backend that closes before HELLO: OK")
+def test_read_hello_raises_on_early_close():
+    try:
+        read_hello(_FakeChannel([]), lambda _m: None)
+    except ConnectionError:
+        pass
+    else:
+        raise AssertionError("expected ConnectionError when HELLO never arrives")
+    print("read_hello raises when the backend closes before HELLO: OK")
 
 
 def main():
-    test_startup_streams_log_then_returns_label()
-    test_startup_reports_verification_failure()
-    test_startup_handles_early_close()
+    test_read_hello_streams_logs_then_returns_hello()
+    test_read_hello_reports_verification_failure_in_dict()
+    test_read_hello_raises_on_early_close()
     print("\nALL backend startup tests passed.")
 
 
 if __name__ == "__main__":
     main()
+
