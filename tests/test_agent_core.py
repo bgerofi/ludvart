@@ -209,6 +209,13 @@ def test_reminder_appended_to_last_user_turn_only():
     print("reminder is appended to the last user turn: OK")
 
 
+def test_reminder_names_the_helper_path():
+    """The helper is not on PATH, so the reminder has to spell out where it is."""
+    assert "~/.ludvart/bin/ludvart_helper" in AgentCore._TOOL_REMINDER
+    assert "NOT on PATH" in AgentCore._TOOL_REMINDER
+    print("reminder names the full helper path: OK")
+
+
 def test_reminder_not_stored_in_history():
     host = RecordingHost()
     llm = ScriptedLLM([_text_turn("ok")])
@@ -417,6 +424,7 @@ def main():
     test_transcript_accumulates_for_persistence()
     test_neutral_helpers()
     test_reminder_appended_to_last_user_turn_only()
+    test_reminder_names_the_helper_path()
     test_reminder_not_stored_in_history()
     test_reminder_does_not_accumulate_across_turns()
     test_reminder_survives_tool_loop_iterations()

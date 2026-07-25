@@ -76,6 +76,20 @@ def test_helpers_doc_is_ascii_and_documents_the_helper():
     assert "ludvart_helper" in LUDVART_HELPERS_DOC
 
 
+def test_prompt_never_invokes_the_helper_by_a_bare_name():
+    """The helper is not on PATH, so every example must spell out its path.
+
+    Models kept running a bare ``ludvart_helper``, getting "command not found",
+    and concluding the helper was missing -- because the spec named the path
+    once but then used the bare name in its examples.
+    """
+    prompt = system_prompt(builtin_tool_specs())
+    assert "NOT on PATH" in prompt
+    for line in prompt.splitlines():
+        for bad in ("`ludvart_helper ", "'ludvart_helper ", "$ ludvart_helper "):
+            assert bad not in line, f"bare helper invocation: {line!r}"
+
+
 def test_self_md_limit_is_a_sane_positive_bound():
     assert isinstance(SELF_MD_MAX_CHARS, int)
     assert SELF_MD_MAX_CHARS > 0
@@ -87,6 +101,7 @@ def main() -> None:
     test_prompt_requires_helper_over_raw_injected_shell()
     test_prompt_describes_the_screen_context_and_user_request_blocks()
     test_helpers_doc_is_ascii_and_documents_the_helper()
+    test_prompt_never_invokes_the_helper_by_a_bare_name()
     test_self_md_limit_is_a_sane_positive_bound()
     print("prompt: OK")
 

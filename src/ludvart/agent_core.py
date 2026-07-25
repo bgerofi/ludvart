@@ -328,7 +328,9 @@ class AgentCore:
         "<reminder>If you are operating on a console/terminal, remember to use "
         "your ludvart helper tools (read, write, append, replace, replace-range, "
         "structured-patch, search, run) for file and command operations rather "
-        "than improvising ad-hoc shell commands.</reminder>"
+        "than improvising ad-hoc shell commands. The helper is NOT on PATH: "
+        "always invoke it by its full path, ~/.ludvart/bin/ludvart_helper."
+        "</reminder>"
     )
 
     def _with_reminder(self, history: list[dict]) -> list[dict]:

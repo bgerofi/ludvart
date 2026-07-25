@@ -29,8 +29,14 @@ If `ludvart_helper` exists, prefer it for file read/edit/search (see spec below)
 If it's missing and a task would benefit, offer to (re)create it, or do so when
 the user says "initialize your helpers".
 
+IMPORTANT: the helper is NOT on PATH. Typing a bare `ludvart_helper` will fail
+with "command not found". ALWAYS invoke it by its full path:
+    ~/.ludvart/bin/ludvart_helper <subcommand> ...
+If you see "command not found", the fix is the full path -- do not conclude the
+helper is missing until you have run `ls -la ~/.ludvart/bin/`.
+
 ### "initialize your helpers" ritual
-  1. Detect what exists (ls ~/.ludvart/bin, and `ludvart_helper info`).
+  1. Detect what exists (ls ~/.ludvart/bin, and `~/.ludvart/bin/ludvart_helper info`).
   2. Confirm desired capabilities (default set: read, write, append, replace,
      search, run).
   3. (Re)generate helper(s) into ~/.ludvart/bin/, chmod +x, then VALIDATE:
@@ -40,7 +46,9 @@ the user says "initialize your helpers".
      arrive verbatim); verify with `wc -l` after each chunk.
   4. Report what was created and how to call it.
 ### ludvart_helper - precise interface (v0.1.0, stdlib Python 3 only)
-Path: ~/.ludvart/bin/ludvart_helper   (executable)
+Path: ~/.ludvart/bin/ludvart_helper   (executable, NOT on PATH -- always call it
+by this full path). The subcommands below are shown without the path for
+brevity; prepend ~/.ludvart/bin/ludvart_helper to every one of them.
 Design: every CONTENT payload is base64 (immune to quoting/newline/escape
 corruption); every result is sentinel-framed with an exit code, so output is
 parsed deterministically, NOT inferred from screen text.
@@ -79,8 +87,8 @@ Subcommands:
       command, same as normal shell semantics.
   info
       Payload = base64 of "ludvart_helper <ver>\\ncaps=...\\npython=...".
-      Use this (or `ludvart_helper <subcmd> -h`) to re-derive the interface in a
-      fresh session if this spec is ever unavailable.
+      Use this (or `~/.ludvart/bin/ludvart_helper <subcmd> -h`) to re-derive the
+      interface in a fresh session if this spec is ever unavailable.
 ### Usage conventions
   - Pass content/commands as base64:  --b64 "$(printf %s "$TEXT" | base64 -w0)"
         (use `base64 -w0` to avoid line wrapping).
@@ -165,11 +173,12 @@ def system_prompt(tools: Sequence[ToolSpec]) -> str:
         "show a '?' instead. Use '-' for bullets and dashes, straight ' and "
         "\" quotes, and '->' for arrows.\n\n"
         "When helper tools under ~/.ludvart/bin/ are available (check with "
-        "'ls ~/.ludvart/bin/' and 'ludvart_helper info' early in a session), "
-        "you MUST use ludvart_helper instead of injecting raw shell input "
-        "through inject_input for file reads, edits, searches, and "
-        "non-interactive commands. Use 'ludvart_helper read', 'replace', "
-        "'search', or 'run' as appropriate. Its base64 payloads and "
+        "'ls ~/.ludvart/bin/' and '~/.ludvart/bin/ludvart_helper info' early in "
+        "a session), you MUST use ludvart_helper instead of injecting raw shell "
+        "input through inject_input for file reads, edits, searches, and "
+        "non-interactive commands. It is NOT on PATH, so always spell out "
+        "'~/.ludvart/bin/ludvart_helper read', 'replace', 'search', or 'run' as "
+        "appropriate. Its base64 payloads and "
         "sentinel-framed exit codes avoid dangerous quoting/escape corruption. "
         "Use raw injected shell input only for interactive terminal work, or "
         "when the helper is unavailable or cannot express the operation. Do "
