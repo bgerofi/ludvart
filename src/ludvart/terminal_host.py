@@ -65,6 +65,10 @@ class TerminalHost(ABC):
         """
         # Default: nothing to display.
 
+    def add_summary(self, text: str) -> None:
+        """Mark a context-compaction point in the transcript with its summary."""
+        # Default: nothing to render.
+
     def set_transcript(self, messages: list) -> None:
         """Replace the visible transcript (e.g. after ``/sessions load|new``).
 

@@ -245,6 +245,11 @@ class _ClientTerminalHost(TerminalHost):
         if panel is not None:
             panel.context_pct = pct
 
+    def add_summary(self, text: str) -> None:
+        panel = self._app._panel
+        if panel is not None:
+            panel.add_summary(text)
+
     def add_info(self, text: str) -> None:
         panel = self._app._panel
         if panel is not None:
