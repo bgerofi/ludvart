@@ -178,28 +178,37 @@ class AgentCore:
                 checkpoint = self._SEED_LEN  # the tail now follows the seed
             self.host.set_activity("Thinking")
             last_stream = ""
-            turn = self.llm.converse(
-                [system, *self._build_context()],
-                tools=self.tools or None,
-                max_tokens=self.max_tokens,
-                on_text=on_text,
-            )
-            self.history.append(neutral_assistant(turn))
-            self._report_usage(turn)
-            if not turn.tool_calls:
-                self.transcript.append(("ludvart", turn.text))
-                self._persist()
-                return turn.text
-            # Keep this request's streamed commentary in the narration (above
-            # the tool notes) so it stays visible through the tool round-trips.
-            if last_stream:
-                narration.append(last_stream)
-            for call in turn.tool_calls:
-                narration.append(tool_call_note(call))
-                self.host.narrate(compose())
-                self.host.set_activity(f"Calling {call.name}")
-                output = self._run_tool(call)
-                self.history.append(neutral_tool_result(call, output))
+            try:
+                turn = self.llm.converse(
+                    [system, *self._build_context()],
+                    tools=self.tools or None,
+                    max_tokens=self.max_tokens,
+                    on_text=on_text,
+                )
+                self.history.append(neutral_assistant(turn))
+                self._report_usage(turn)
+                if not turn.tool_calls:
+                    self.transcript.append(("ludvart", turn.text))
+                    self._persist()
+                    return turn.text
+                # Keep this request's streamed commentary in the narration (above
+                # the tool notes) so it stays visible through the tool round-trips.
+                if last_stream:
+                    narration.append(last_stream)
+                for call in turn.tool_calls:
+                    narration.append(tool_call_note(call))
+                    self.host.narrate(compose())
+                    self.host.set_activity(f"Calling {call.name}")
+                    output = self._run_tool(call)
+                    self.history.append(neutral_tool_result(call, output))
+            except BaseException:
+                # Roll the turn back so the history stays well-formed. Failing
+                # between a tool call and its result (a dropped backend
+                # connection, a cancel, a provider error) would otherwise leave
+                # an assistant turn whose tool calls are never answered, and
+                # every later request built from it is rejected.
+                del self.history[checkpoint:]
+                raise
 
     def _report_usage(self, turn) -> None:
         """Push the prompt's context usage to the host (drives the ``[NN%]`` badge)."""
@@ -371,6 +380,46 @@ class AgentCore:
             break
         return out
 
+    @staticmethod
+    def _drop_unanswered_tool_calls(history: list[dict]) -> list[dict]:
+        """Return a copy with every unanswered tool call removed.
+
+        :meth:`run_turn` rolls a failed turn back, but a session persisted by an
+        older build (or interrupted between the append and the rollback) can
+        still carry an assistant turn whose tool calls never got a result.
+        Providers reject such a request outright, so a single dropped connection
+        would otherwise poison every later turn of the conversation.
+        """
+        answered = {
+            msg.get("tool_call_id")
+            for msg in history
+            if isinstance(msg, dict) and msg.get("role") == "tool"
+        }
+
+        def unanswered(msg) -> list[dict]:
+            calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+            if not isinstance(calls, list):
+                return []
+            return [c for c in calls if c.get("id") not in answered]
+
+        out = list(history)
+        # A trailing one has nothing left to say once its calls are gone, and
+        # leaving it would end the request on an assistant turn.
+        while out and unanswered(out[-1]):
+            out.pop()
+        for i, msg in enumerate(out):
+            stale = unanswered(msg)
+            if not stale:
+                continue
+            patched = dict(msg)
+            kept = [c for c in msg["tool_calls"] if c not in stale]
+            if kept:
+                patched["tool_calls"] = kept
+            else:
+                patched.pop("tool_calls", None)
+            out[i] = patched
+        return out
+
     def _build_context(self) -> list[dict]:
         """Render the neutral history into the active provider's message shape.
 
@@ -378,7 +427,8 @@ class AgentCore:
         :meth:`_strip_old_screenshots`) so only the newest ``<screenContext>``
         is sent to the model.
         """
-        history = self._with_reminder(self._strip_old_screenshots(self.history))
+        history = self._drop_unanswered_tool_calls(self.history)
+        history = self._with_reminder(self._strip_old_screenshots(history))
         build = getattr(self.llm, "build_context", None)
         if build is None:
             return history

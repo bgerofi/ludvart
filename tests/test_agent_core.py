@@ -88,6 +88,10 @@ def _tool_turn(text, call):
     )
 
 
+def _raise_lost_client(name, args):
+    raise ConnectionError("the client vanished mid-turn")
+
+
 def test_plain_answer_turn():
     host = RecordingHost()
     llm = ScriptedLLM([_text_turn("hello there")])
@@ -418,6 +422,71 @@ def test_compact_on_demand_ignores_the_threshold():
     print("on-demand compaction ignores the threshold: OK")
 
 
+def test_failed_turn_is_rolled_back_out_of_the_history():
+    """A turn that dies between a tool call and its result must leave no trace.
+
+    Otherwise the history ends on an assistant turn whose tool calls are never
+    answered, and every later request built from it is rejected by the provider.
+    """
+    host = RecordingHost()
+    host.run_terminal_tool = _raise_lost_client
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    llm = ScriptedLLM([_tool_turn("working", call)])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    try:
+        core.run_turn("do it", "SCREEN")
+    except ConnectionError:
+        pass
+    else:  # pragma: no cover - the fake host always raises
+        raise AssertionError("expected the dropped connection to propagate")
+
+    assert core.history == [], core.history
+    print("a failed turn is rolled back out of the history: OK")
+
+
+def test_a_later_turn_after_a_failure_is_well_formed():
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    llm = ScriptedLLM([_tool_turn("working", call), _text_turn("recovered")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    host.run_terminal_tool = _raise_lost_client
+    try:
+        core.run_turn("do it", "SCREEN")
+    except ConnectionError:
+        pass
+
+    # The backend keeps serving, so the next ask must produce a valid request.
+    assert core.run_turn("try again", "SCREEN") == "recovered"
+    sent = llm.seen_messages[-1]
+    assert sent[-1]["role"] == "user", sent[-1]
+    assert not any(m.get("tool_calls") for m in sent), sent
+    print("a later turn after a failure is well formed: OK")
+
+
+def test_a_dangling_tool_call_is_never_sent():
+    """Histories corrupted by an older build still have to render cleanly."""
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("ok")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+    core.history = [
+        {"role": "user", "content": "earlier question"},
+        {
+            "role": "assistant",
+            "content": "working",
+            "tool_calls": [{"id": "c1", "name": "inject_input", "input": {}}],
+        },
+    ]
+
+    core.run_turn("next question", "SCREEN")
+
+    sent = llm.seen_messages[-1]
+    assert sent[-1]["role"] == "user", sent[-1]
+    assert not any(m.get("tool_calls") for m in sent), sent
+    print("a dangling tool call is never sent: OK")
+
+
 def main():
     test_plain_answer_turn()
     test_client_tool_routes_through_host()
@@ -439,6 +508,9 @@ def main():
     test_get_past_snapshot_rejects_an_unknown_timestamp()
     test_past_snapshots_survive_a_resumed_session()
     test_compact_on_demand_ignores_the_threshold()
+    test_failed_turn_is_rolled_back_out_of_the_history()
+    test_a_later_turn_after_a_failure_is_well_formed()
+    test_a_dangling_tool_call_is_never_sent()
     print("\nALL agent core tests passed.")
 
 
