@@ -80,8 +80,10 @@ class _ToolLoopLLM:
         self._pcts = list(pcts)
         self.calls = 0
         self.summarize_calls = 0
+        self.seen_messages = []
 
     def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        self.seen_messages.append(list(messages))
         last = messages[-1]["content"] if messages else ""
         if isinstance(last, str) and "Summarize the ENTIRE" in last:
             self.summarize_calls += 1
@@ -138,10 +140,26 @@ def test_compacts_inside_agent_loop():
     assert llm.summarize_calls >= 1, llm.summarize_calls
     # The compaction surfaced to the terminal side.
     assert host.summaries, host.summaries
-    # After compaction the model-facing history was reseeded from the summary,
-    # so it is small -- not the full unbounded transcript.
-    assert len(core.history) <= 6, len(core.history)
+    # The history was reseeded from the summary, so it stays bounded rather than
+    # growing with the whole transcript.
+    assert len(core.history) <= 12, len(core.history)
+    assert "<conversationSummary>" in core.history[0]["content"]
+    # The question being answered survived the reseed -- dropping it would leave
+    # the model working blind.
+    assert any("do a multi-step task" in str(m.get("content")) for m in core.history)
     print("compacts inside agent loop: OK")
+
+
+def test_compaction_never_leaves_the_model_a_prefilled_assistant_turn():
+    """Every request must end with a user/tool message, not the summary seed's
+    assistant acknowledgement -- providers like Copilot reject that with a 400.
+    """
+    core, _host, llm = _core([30.0, 92.0, 40.0])
+    core.run_turn("do a multi-step task", "SCREEN-SNAPSHOT")
+    assert llm.summarize_calls >= 1, "expected a compaction to have happened"
+    for sent in llm.seen_messages:
+        assert sent[-1].get("role") != "assistant", sent[-1]
+    print("compaction never ends a request with an assistant turn: OK")
 
 
 def test_no_compaction_when_under_threshold():
@@ -166,6 +184,7 @@ def test_badge_reflects_overshoot():
 def main():
     test_context_percent_reports_overshoot()
     test_compacts_inside_agent_loop()
+    test_compaction_never_leaves_the_model_a_prefilled_assistant_turn()
     test_no_compaction_when_under_threshold()
     test_badge_reflects_overshoot()
     print("\nALL compaction loop tests passed.")

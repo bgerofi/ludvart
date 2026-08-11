@@ -79,6 +79,9 @@ class AgentCore:
     #: Token budget for the summary request itself.
     SUMMARY_MAX_TOKENS = 2048
 
+    #: Messages a compaction reseeds the history with (summary + acknowledgement).
+    _SEED_LEN = 2
+
     def __init__(
         self,
         llm: LLMClient,
@@ -123,6 +126,11 @@ class AgentCore:
         call the model, run any requested tools, feed results back, until the
         model returns a plain-text answer.
         """
+        # Compact before the turn is recorded, so the summary seed is followed
+        # by the user's question. Reseeding after it would leave the assistant
+        # acknowledgement as the final message, which providers that reject an
+        # assistant prefill (e.g. Copilot) refuse with a 400.
+        self.maybe_compact()
         self.transcript.append(("you", question))
         # Stamp each snapshot with a UTC timestamp (nanosecond precision) so it
         # can be addressed later. When older snapshots are stripped from the
@@ -137,6 +145,8 @@ class AgentCore:
             f"<userRequest>\n{question}\n</userRequest>"
         )
         self.history.append({"role": "user", "content": user_content})
+        # Where this turn starts, so a mid-loop compaction can carry it over.
+        checkpoint = len(self.history) - 1
         system = {"role": "system", "content": self.system_prompt}
 
         # Running narration for this ask. Streamed commentary and one note per
@@ -161,8 +171,11 @@ class AgentCore:
             # Compact before EVERY request, not just once per user turn: one
             # agentic turn can issue many tool round-trips and each re-sends the
             # whole history (snapshots + tool output), so the context grows
-            # inside this loop.
-            self.maybe_compact()
+            # inside this loop. The in-flight turn is carried over the reseed --
+            # dropping it would strand the question being answered and orphan
+            # the tool_use/tool_result pairs the model is waiting on.
+            if self.maybe_compact(keep_tail=self.history[checkpoint:]):
+                checkpoint = self._SEED_LEN  # the tail now follows the seed
             self.host.set_activity("Thinking")
             last_stream = ""
             turn = self.llm.converse(
@@ -199,19 +212,20 @@ class AgentCore:
 
     # -- context compaction --------------------------------------------------
 
-    def maybe_compact(self) -> bool:
+    def maybe_compact(self, keep_tail: list[dict] | None = None) -> bool:
         """Compact the conversation into a summary if the window is nearly full.
 
         Triggered when the last prompt filled at least
         :attr:`CONTEXT_COMPACT_PCT` of the model's context window. A history
         that is already just a fresh summary seed (<= 2 messages) is left alone.
+        ``keep_tail`` is replayed after the seed (see :meth:`_compact_history`).
         Returns ``True`` when it actually compacted.
         """
-        if len(self.history) <= 2:
+        if len(self.history) <= self._SEED_LEN:
             return False
         if self.context_pct is None or self.context_pct < self.CONTEXT_COMPACT_PCT:
             return False
-        return self._compact_history() is not None
+        return self._compact_history(keep_tail=keep_tail) is not None
 
     def compact(self) -> str | None:
         """Compact now regardless of how full the window is (the ``/compact``
@@ -219,13 +233,16 @@ class AgentCore:
         """
         return self._compact_history()
 
-    def _compact_history(self) -> str | None:
+    def _compact_history(self, keep_tail: list[dict] | None = None) -> str | None:
         """Summarize the conversation and reseed the context from that summary.
 
         The model-facing history is replaced by a two-message seed; the visible
         transcript keeps the whole conversation with a compaction marker, so a
-        reloaded session shows where it happened. Returns the summary text, or
-        ``None`` when the summary request failed (history left unchanged).
+        reloaded session shows where it happened. ``keep_tail`` (the messages of
+        a turn that is still in flight) is replayed after the seed, so the model
+        keeps the request it is answering and no tool call is left unanswered.
+        Returns the summary text, or ``None`` when the summary request failed
+        (history left unchanged).
         """
         self.host.set_activity("Compacting context")
         summary = self._summarize_history()
@@ -240,6 +257,7 @@ class AgentCore:
                 "role": "assistant",
                 "content": "Understood. I will continue the task from this summary.",
             },
+            *(keep_tail or []),
         ]
         self.transcript.append(("summary", summary))
         self.host.add_summary(summary)
