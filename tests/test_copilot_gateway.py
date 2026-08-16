@@ -248,6 +248,79 @@ def test_shared_gateway_is_reused_instead_of_spawned(monkeypatch):
     print("a shared gateway is reused instead of spawned: OK")
 
 
+def test_a_stale_copilot_key_is_dropped(tmp_path, monkeypatch):
+    """Only the derived key goes; the access token must survive untouched."""
+    monkeypatch.setenv("GITHUB_COPILOT_TOKEN_DIR", str(tmp_path))
+    (tmp_path / "access-token").write_text("ghu_secret")
+    (tmp_path / "api-key.json").write_text("{}")
+
+    assert gateway.drop_cached_copilot_key() is True
+    assert not (tmp_path / "api-key.json").exists()
+    assert (tmp_path / "access-token").read_text() == "ghu_secret"
+    # Nothing left to drop: the caller must not loop on it.
+    assert gateway.drop_cached_copilot_key() is False
+    print("a stale copilot key is dropped: OK")
+
+
+def test_a_forbidden_verify_is_retried_on_a_fresh_key(monkeypatch):
+    """GitHub rejects a still-cached key once its seat state rotates.
+
+    LiteLLM caches on ``expires_at`` alone, so it keeps sending the dead key
+    and every switch fails until the cache is cleared by hand.
+    """
+    from ludvart import backend as backend_mod
+    from ludvart.llm import LLMError
+
+    dropped = []
+    monkeypatch.setattr(
+        gateway, "drop_cached_copilot_key", lambda: (dropped.append(1), True)[1]
+    )
+
+    class _Client:
+        config = type("C", (), {"api_mode": "chat"})()
+
+        def __init__(self):
+            self.calls = 0
+
+        def verify(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMError(
+                    "custom request failed after 0.6s (timeout 120s): "
+                    "openai.PermissionDeniedError: Error code: 403 - "
+                    "{'error': {'message': 'Github_copilotException - forbidden'}}"
+                )
+
+    client = _Client()
+    backend = backend_mod.Backend(client, object())
+    backend_mod.verify_backend(backend)
+
+    assert dropped, "the stale key was never dropped"
+    assert client.calls == 2, client.calls
+    print("a forbidden verify is retried on a fresh key: OK")
+
+
+def test_a_forbidden_that_survives_a_refresh_is_reported(monkeypatch):
+    """A genuinely unentitled account must still surface the 403."""
+    from ludvart import backend as backend_mod
+    from ludvart.llm import LLMError
+
+    monkeypatch.setattr(gateway, "drop_cached_copilot_key", lambda: True)
+
+    class _Client:
+        config = type("C", (), {"api_mode": "chat"})()
+
+        def verify(self):
+            raise LLMError("Error code: 403 - forbidden")
+
+    try:
+        backend_mod.verify_backend(backend_mod.Backend(_Client(), object()))
+    except LLMError:
+        print("a forbidden that survives a refresh is reported: OK")
+        return
+    raise AssertionError("expected the 403 to propagate")
+
+
 def _run():
     orig = gateway._litellm_cli
     tests = [

@@ -73,6 +73,17 @@ def verify_backend(backend: Backend) -> None:
     try:
         backend.client.verify()
     except LLMError as exc:
+        from .gateway import drop_cached_copilot_key, is_forbidden
+
+        # A stale cached Copilot key is rejected with a bare 403 long before
+        # LiteLLM thinks it expired; dropping it re-mints from the access token.
+        if (
+            backend.gateway is not None
+            and is_forbidden(exc)
+            and drop_cached_copilot_key()
+        ):
+            backend.client.verify()
+            return
         # Copilot's model list includes Responses-only models. LiteLLM gives a
         # stable, specific rejection when one reaches Chat Completions; retry it
         # through the same gateway with the Responses wire client instead.

@@ -132,6 +132,34 @@ def authenticate_copilot() -> None:
         raise GatewayError(f"GitHub Copilot authentication failed: {exc}") from exc
 
 
+def drop_cached_copilot_key() -> bool:
+    """Discard the cached Copilot API key so the next call mints a fresh one.
+
+    GitHub hands out a short-lived key alongside a ``refresh_in`` that is
+    shorter than its own ``expires_at``, and it invalidates outstanding keys
+    early whenever the seat state rotates. LiteLLM caches on ``expires_at``
+    alone, so a key it still considers valid can start coming back as a bare
+    ``403 forbidden``. Deleting the cache is enough -- the OAuth access token
+    is untouched, so no re-login is needed.
+
+    Returns True if a cached key was removed.
+    """
+    path = os.path.join(
+        _token_dir(), os.getenv("GITHUB_COPILOT_API_KEY_FILE", "api-key.json")
+    )
+    try:
+        os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
+def is_forbidden(exc: BaseException) -> bool:
+    """True if ``exc`` looks like Copilot's 403, whatever layer wrapped it."""
+    text = str(exc).lower()
+    return "403" in text and "forbidden" in text
+
+
 #: Headers GitHub Copilot expects (simulating the VS Code client), reused for
 #: the ``/models`` listing call below.
 _COPILOT_HEADERS = {
@@ -155,7 +183,8 @@ def list_copilot_models() -> list[str]:
         from litellm.llms.github_copilot.authenticator import Authenticator
     except Exception:
         return []
-    try:
+
+    def fetch() -> list[str]:
         auth = Authenticator()
         api_key = auth.get_api_key()
         api_base = auth.get_api_base().rstrip("/")
@@ -168,6 +197,14 @@ def list_copilot_models() -> list[str]:
         data = resp.json()
         ids = {m.get("id") for m in data.get("data", []) if m.get("id")}
         return sorted(ids)
+
+    try:
+        return fetch()
+    except Exception as exc:
+        if not (is_forbidden(exc) and drop_cached_copilot_key()):
+            return []
+    try:
+        return fetch()
     except Exception:
         return []
 
