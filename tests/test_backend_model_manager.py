@@ -118,6 +118,33 @@ def test_add_rejects_unverifiable():
     print("add rejects unverifiable: OK")
 
 
+def test_a_failed_switch_stops_the_gateway_it_started():
+    """The gateway is already up by the time verification fails.
+
+    Nothing else references it once ``use`` returns, so a rejected switch used
+    to strand a litellm proxy per attempt for the life of the backend.
+    """
+    stopped = []
+
+    class _Gateway:
+        def stop(self):
+            stopped.append(1)
+
+    def fake_build(reg_, *, status=None):
+        client = _FakeClient(reg_["provider"], reg_.get("_ok", True))
+        return backend.Backend(client, _Gateway())
+
+    backend.build_backend = fake_build
+    backend.verify_backend = lambda b: b.client.verify()
+    m = _mgr([_reg(model="a", active=True), _reg(model="b", ok=False)])
+
+    ok, _ = m.use(1)
+
+    assert not ok
+    assert stopped, "the gateway started for the failed switch was left running"
+    print("a failed switch stops the gateway it started: OK")
+
+
 def test_remove_forbids_active():
     _install_fakes()
     m = _mgr([_reg(model="a", active=True), _reg(model="b")])
@@ -135,6 +162,7 @@ def main():
     test_use_unavailable_verifies_and_may_fail()
     test_add_appends_verified_without_switching()
     test_add_rejects_unverifiable()
+    test_a_failed_switch_stops_the_gateway_it_started()
     test_remove_forbids_active()
     print("\nALL ModelManager tests passed.")
 

@@ -213,10 +213,15 @@ class ModelManager:
         reg = self.models[index]
         if reg.get("active"):
             return True, f"Already using {label(reg)}."
+        backend: Backend | None = None
         try:
             backend = build_backend(reg, status=status)
             verify_backend(backend)
         except Exception as exc:
+            # The gateway is already running by the time verification fails, and
+            # nothing else holds a reference to it once we return.
+            if backend is not None:
+                backend.stop()
             self.available[index] = False
             return False, f"Could not switch to {label(reg)}: {exc}"
         if before_swap is not None:
