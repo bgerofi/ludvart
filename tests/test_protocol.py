@@ -234,6 +234,44 @@ def test_frame_channel_send_is_thread_safe():
     print("concurrent FrameChannel sends do not interleave: OK")
 
 
+def test_recv_swallows_keepalives():
+    """A ping may land while a read site awaits one specific reply.
+
+    Those sites reject anything unexpected, so the keepalive must never reach
+    them -- but it still has to count as the peer being heard from.
+    """
+    import time as _time
+
+    from ludvart.protocol import FrameChannel, MsgType, encode_frame
+
+    payload = (
+        encode_frame(message(MsgType.PING))
+        + encode_frame(message(MsgType.PING))
+        + encode_frame(message(MsgType.REPLY, text="hi"))
+    )
+    channel = FrameChannel(io.BytesIO(payload), io.BytesIO())
+    channel.last_recv = _time.monotonic() - 100
+
+    got = channel.recv()
+
+    assert got["type"] == MsgType.REPLY, got
+    assert channel.saw_ping is True
+    assert _time.monotonic() - channel.last_recv < 5
+    assert channel.recv() is None
+    print("recv swallows keepalives: OK")
+
+
+def test_a_channel_without_pings_is_not_marked_alive():
+    """The backend arms its watchdog off this flag; a silent peer must not."""
+    from ludvart.protocol import FrameChannel, encode_frame
+
+    channel = FrameChannel(io.BytesIO(encode_frame(message("reply"))), io.BytesIO())
+
+    assert channel.recv()["type"] == "reply"
+    assert channel.saw_ping is False
+    print("a channel without pings is not marked alive: OK")
+
+
 def main():
     test_frame_roundtrip()
     test_multiple_frames_in_stream()
@@ -251,6 +289,8 @@ def main():
     test_require_fields()
     test_frame_channel_over_os_pipe()
     test_frame_channel_send_is_thread_safe()
+    test_recv_swallows_keepalives()
+    test_a_channel_without_pings_is_not_marked_alive()
     print("\nALL protocol tests passed.")
 
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import struct
 import threading
+import time
 from typing import Any, BinaryIO
 
 #: 4-byte big-endian unsigned length prefix on every frame.
@@ -87,6 +88,10 @@ class MsgType:
     PROMPT = "prompt"
     #: B->C: a diagnostic line (shown in the panel or a log, never fatal).
     LOG = "log"
+    #: C->B: keepalive. Carries nothing and is answered by nothing; the backend
+    #: only uses its arrival to tell a live-but-idle client from a dead one.
+    #: Swallowed by :meth:`FrameChannel.recv`, so no read site ever sees it.
+    PING = "ping"
     #: Either direction: clean shutdown request/acknowledgement.
     BYE = "bye"
     #: Either direction: a non-fatal error report tied (optionally) to a call.
@@ -219,6 +224,10 @@ class FrameChannel:
         self._max_frame = max_frame
         self._write_lock = threading.Lock()
         self._closed = False
+        #: When the peer was last heard from, for liveness checks.
+        self.last_recv = time.monotonic()
+        #: True once a PING has arrived, i.e. the peer does keepalives at all.
+        self.saw_ping = False
 
     def send(self, obj: dict[str, Any]) -> None:
         """Serialise and write one message frame (thread-safe)."""
@@ -226,8 +235,20 @@ class FrameChannel:
             write_frame(self._writer, obj, max_frame=self._max_frame)
 
     def recv(self) -> dict[str, Any] | None:
-        """Read one message frame, or ``None`` at a clean end-of-stream."""
-        return read_frame(self._reader, max_frame=self._max_frame)
+        """Read one message frame, or ``None`` at a clean end-of-stream.
+
+        Keepalives are consumed here rather than returned: a PING may arrive at
+        any point, including while a read site is blocked waiting for one
+        specific reply, and those sites reject anything unexpected.
+        """
+        while True:
+            msg = read_frame(self._reader, max_frame=self._max_frame)
+            self.last_recv = time.monotonic()
+            if msg is None:
+                return None
+            if msg.get("type") != MsgType.PING:
+                return msg
+            self.saw_ping = True
 
     def close(self) -> None:
         """Close both underlying streams, ignoring errors (idempotent)."""

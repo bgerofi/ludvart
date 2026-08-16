@@ -20,14 +20,20 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from typing import IO, Sequence
 
-from .protocol import FrameChannel
+from .protocol import FrameChannel, MsgType, message
 
 #: Seconds to wait for the backend to exit after we close its stdin (EOF) before
 #: escalating to terminate(), then to kill().
 _STOP_GRACE = 5.0
 _TERM_GRACE = 2.0
+
+#: How often the client tells the backend it is still there. Comfortably below
+#: the backend's own patience (``server.CLIENT_TIMEOUT``) so a slow link or a
+#: busy client can miss several in a row without being declared dead.
+PING_INTERVAL = 30.0
 
 
 def parse_backend_spec(spec: str) -> tuple[str, str]:
@@ -66,6 +72,29 @@ class Transport:
         self._proc = proc
         self.channel = FrameChannel(proc.stdout, proc.stdin)
         self._closed = False
+        self._stop_ping = threading.Event()
+        self._pinger: threading.Thread | None = None
+
+    def start_keepalive(self, interval: float = PING_INTERVAL) -> None:
+        """Ping the backend periodically so it can tell we are still alive.
+
+        Only worth starting against a backend that advertises support: an older
+        one treats the unexpected frame as a protocol error. Idempotent.
+        """
+        if self._stop_ping.is_set() or self._pinger is not None:
+            return
+
+        def loop() -> None:
+            while not self._stop_ping.wait(interval):
+                try:
+                    self.channel.send(message(MsgType.PING))
+                except Exception:
+                    return  # the channel is gone; close() handles the rest
+
+        self._pinger = threading.Thread(
+            target=loop, name="ludvart-backend-keepalive", daemon=True
+        )
+        self._pinger.start()
 
     @property
     def pid(self) -> int:
@@ -85,6 +114,7 @@ class Transport:
         if self._closed:
             return
         self._closed = True
+        self._stop_ping.set()
         proc = self._proc
         # Signal EOF on the backend's stdin without closing our reader yet, so a
         # backend that flushes a final BYE is not cut off mid-write.

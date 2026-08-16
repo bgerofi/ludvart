@@ -45,12 +45,12 @@ def read_hello(channel: FrameChannel, on_log: Callable[[str], None]) -> dict:
 class BackendReconnector:
     """Owns the backend transport and respawns it when the connection drops.
 
-    ``spawn`` is a zero-arg factory returning a fresh transport (with ``channel``
-    and ``close()``) -- a local fork or an SSH process. On reconnect the backend
-    is a brand-new process, so its last *saved* session is reloaded to restore
-    the conversation up to the last completed turn (the backend persists after
-    each turn). Progress is reported through the ``notify`` callback so it shows
-    on the panel like narration.
+    ``spawn`` is a zero-arg factory returning a fresh transport (with ``channel``,
+    ``start_keepalive()`` and ``close()``) -- a local fork or an SSH process. On
+    reconnect the backend is a brand-new process, so its last *saved* session is
+    reloaded to restore the conversation up to the last completed turn (the
+    backend persists after each turn). Progress is reported through the
+    ``notify`` callback so it shows on the panel like narration.
     """
 
     _MAX_SPAWN_ATTEMPTS = 3
@@ -73,6 +73,10 @@ class BackendReconnector:
         log = on_log or self._on_log
         self._transport = self._spawn()
         hello = read_hello(self._transport.channel, log)
+        if hello.get("keepalive"):
+            # Older backends reject the unexpected frame, so only ping when the
+            # far side says it understands one.
+            self._transport.start_keepalive()
         self.label = hello.get("active_label") or "backend"
         self.session_id = hello.get("session_id")
         self.verified = bool(hello.get("verified"))

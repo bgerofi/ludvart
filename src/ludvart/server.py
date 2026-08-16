@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Sequence
+import threading
+import time
+from typing import Callable, Sequence
 
 from .agent_core import DEFAULT_CLIENT_TOOLS, AgentCore
 from .llm import LLMClient, ProviderConfig, ToolCall, ToolSpec, Turn
@@ -517,6 +519,69 @@ def _context_pct_for(core, client) -> float | None:
     return 100.0 * tokens / window
 
 
+#: How long the backend keeps serving after the last word from a keepalive-
+#: capable client. Generous: missing this many pings means the client is gone,
+#: not merely busy or on a slow link.
+CLIENT_TIMEOUT = float(os.environ.get("LUDVART_CLIENT_TIMEOUT", "300"))
+
+
+def _shutdown(manager, core) -> None:
+    """Release everything the backend owns outside its own process."""
+    for close in (
+        lambda: manager.gateway.stop() if getattr(manager, "gateway", None) else None,
+        core.close,
+    ):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def watch_client(
+    channel: FrameChannel,
+    cleanup: Callable[[], None],
+    *,
+    timeout: float | None = None,
+    exit_process: Callable[[int], None] = os._exit,
+) -> threading.Event:
+    """Exit the backend once a keepalive-capable client stops checking in.
+
+    End-of-stream is the normal signal that the client is gone, but it never
+    arrives if something else holds the pipe's write end open -- an SSH channel
+    that was not torn down, say -- leaving the backend blocked in read() forever
+    with its gateway still running. Pings distinguish a dead client from a
+    merely idle one, so a session nobody is using is not killed.
+
+    Arms itself only after the first ping, so an older client that sends none is
+    served exactly as before. Returns an event that cancels the watch.
+    """
+    limit = CLIENT_TIMEOUT if timeout is None else timeout
+    step = max(0.01, min(30.0, limit / 10.0))
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.wait(step):
+            if not channel.saw_ping:
+                continue
+            if time.monotonic() - channel.last_recv < limit:
+                continue
+            print(
+                f"[ludvart] no word from the client in {limit:.0f}s; shutting down",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                cleanup()
+            finally:
+                # The main thread is parked in a read that will never return, so
+                # unwinding it is not an option.
+                exit_process(0)
+            return
+
+    threading.Thread(target=loop, name="ludvart-client-watchdog", daemon=True).start()
+    return stop
+
+
 def serve(
     channel: FrameChannel,
     *,
@@ -586,6 +651,7 @@ def serve(
             MsgType.HELLO,
             app="ludvart",
             protocol=1,
+            keepalive=True,
             active_label=active_label,
             verified=verify_error is None and not needs_setup,
             verify_error=verify_error,
@@ -593,6 +659,7 @@ def serve(
             session_id=getattr(session, "session_id", None),
         )
     )
+    watch_client(channel, lambda: _shutdown(manager, core))
     try:
         _request_loop(channel, manager, core)
     finally:

@@ -85,6 +85,10 @@ class _LoopbackBackend:
         )
         self._thread.start()
 
+    def start_keepalive(self):
+        # In-process: the backend cannot outlive us, so nothing to ping.
+        pass
+
     def close(self):
         try:
             self.channel.close()
