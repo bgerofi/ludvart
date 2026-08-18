@@ -112,6 +112,31 @@ def test_spec_is_the_helpers_own_documentation():
     print("spec is extracted, complete, and self-consistent: OK")
 
 
+def test_a_wrong_argument_answers_with_the_right_one():
+    """A misspelled flag must come back framed, carrying that subcommand's spec.
+
+    Models do invent plausible flags (a "--cmd" for run). A bare argparse usage
+    message is not machine-readable and exits 2, which the helper already uses
+    for "old text not found", so the mistake used to dead-end.
+    """
+    with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as fh:
+        fh.write(LUDVART_HELPER_SOURCE)
+        script = fh.name
+    try:
+        r = subprocess.run(["python3", script, "run", "--cmd", "ls"],
+                           capture_output=True, text=True)
+    finally:
+        os.unlink(script)
+    assert r.returncode == 7, (r.returncode, r.stderr)
+    lines = r.stdout.splitlines()
+    assert lines[0] == "<<<LUDVART:BEGIN op=usage>>>"
+    assert "exit=7" in lines[-1] and "subcommand=run" in lines[-1]
+    payload = base64.b64decode(lines[1]).decode()
+    assert "run --b64 CMD" in payload, payload
+    assert "read PATH" not in payload, "dumped the whole spec, not the section"
+    print("a wrong argument answers with the right one: OK")
+
+
 def test_command_is_quote_safe():
     cmd = helper_install_command()
     # Wrapped in single quotes; the inner program must contain no single quote
@@ -171,6 +196,7 @@ if __name__ == "__main__":
     test_source_is_py36_compatible()
     test_runs_under_old_python_if_available()
     test_spec_is_the_helpers_own_documentation()
+    test_a_wrong_argument_answers_with_the_right_one()
     test_command_is_quote_safe()
     test_install_current_and_repair()
     print("all helper_src tests passed")

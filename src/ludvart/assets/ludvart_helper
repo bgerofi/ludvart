@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
 
-VER = "0.3.0"
+VER = "0.4.0"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -35,6 +35,10 @@ Exit codes:
        and backup=PATH.ludvart.bak (the pre-edit contents)
     5  structured-patch: the payload is not valid JSON
     6  structured-patch: the edits list is missing or malformed
+    7  the call itself was wrong -- a missing, unknown or misspelled argument.
+       Nothing ran and nothing was written. The frame is op=usage and its
+       payload is the error followed by the section below for the subcommand
+       that was attempted, so the call can be corrected and retried at once.
 
 Any write first copies the target to PATH.ludvart.bak, and a written .py file is
 compile-checked (meta pycheck=ok or pycheck=FAILED).
@@ -99,6 +103,20 @@ spec
     if you ever need the interface and it is not already in front of you; every
     subcommand also accepts -h.\
 """
+
+def _spec_section(name):
+    if not name or name.startswith("-"):
+        return ""
+    body = SPEC.split("-----------\n", 1)[-1].split("\n")
+    out = []
+    for line in body:
+        if out:
+            if line and not line.startswith(" "):
+                break
+            out.append(line)
+        elif line == name or line.startswith(name + " "):
+            out.append(line)
+    return "\n".join(out).rstrip()
 
 def emit(op, payload_bytes=None, code=0, **meta):
     sys.stdout.write("<<<LUDVART:BEGIN op=%s>>>\n" % op)
@@ -291,8 +309,22 @@ def op_info(a):
 def op_spec(a):
     return emit("spec", SPEC.encode(), 0, version=VER)
 
+class Parser(argparse.ArgumentParser):
+    # argparse's own usage message is unframed and exits 2, which collides with
+    # the helper's "old text not found". Answer with a normal frame carrying the
+    # spec for the attempted subcommand so a wrong flag can be fixed in place.
+    def error(self, message):
+        name = self.prog.split()[-1]
+        if name == "ludvart_helper":
+            # An unknown flag is reported by the top-level parser, which knows
+            # nothing of the subcommand the caller meant.
+            name = (sys.argv[1:2] or [""])[0]
+        text = "error: " + message + "\n\n" + (_spec_section(name) or SPEC)
+        emit("usage", text.encode(), 7, error="bad_args", subcommand=name or "none")
+        sys.exit(7)
+
 def main():
-    p = argparse.ArgumentParser(prog="ludvart_helper")
+    p = Parser(prog="ludvart_helper")
     # NOTE: the required= keyword for subparsers needs Python 3.7+, so we leave
     # the subcommand optional here and enforce that one was chosen manually
     # below. This keeps the helper working on any Python 3.2+ (some hosts still
@@ -310,8 +342,7 @@ def main():
     sc = sub.add_parser("spec"); sc.set_defaults(fn=op_spec)
     a = p.parse_args()
     if not getattr(a, "fn", None):
-        p.print_help(sys.stderr)
-        sys.exit(2)
+        p.error("a subcommand is required, one of: " + CAPS.replace(",", ", "))
     sys.exit(a.fn(a))
 
 if __name__ == "__main__":
