@@ -199,7 +199,7 @@ class AgentCore:
                     narration.append(tool_call_note(call))
                     self.host.narrate(compose())
                     self.host.set_activity(f"Calling {call.name}")
-                    output = self._run_tool(call)
+                    output = self._stamp_screenshot(self._run_tool(call))
                     self.history.append(neutral_tool_result(call, output))
             except BaseException:
                 # Roll the turn back so the history stays well-formed. Failing
@@ -458,8 +458,8 @@ class AgentCore:
 
     # -- past screen snapshots ------------------------------------------------
 
-    #: Breadcrumb that replaces the screen snapshot of superseded user turns in
-    #: the model-facing context. Only the most recent turn keeps its full
+    #: Breadcrumb that replaces the screen snapshot of superseded messages in
+    #: the model-facing context. Only the most recent snapshot keeps its full
     #: <screenContext>; older ones are collapsed to a breadcrumb line to save
     #: context (the live screen is re-fetchable via tools, and the exact past
     #: snapshot via get_past_snapshot(timestamp)). The stored log is untouched.
@@ -498,20 +498,39 @@ class AgentCore:
         )
 
     @classmethod
+    def _stamp_screenshot(cls, text: str) -> str:
+        """Timestamp an unstamped ``<screenContext>`` in a tool result.
+
+        ``inject_input`` returns the settled screen, which is as big as any user
+        turn's snapshot. Stamping it lets :meth:`_strip_old_screenshots` collapse
+        it once it is superseded and still leave the model a breadcrumb it can
+        expand again with ``get_past_snapshot``.
+        """
+        if not isinstance(text, str):
+            return text
+
+        def stamp(m: re.Match) -> str:
+            if cls._SCREEN_TS_RE.search(m.group(0)):
+                return m.group(0)
+            return f'<screenContext ts="{cls._utc_ns_timestamp()}">'
+
+        return cls._SCREEN_OPEN_RE.sub(stamp, text, count=1)
+
+    @classmethod
     def _strip_old_screenshots(cls, history: list[dict]) -> list[dict]:
         """Return a copy of the neutral log keeping only the newest screenshot.
 
-        Every user turn embeds a ``<screenContext ts="...">...</screenContext>``
-        block. Older snapshots are stale -- the screen changes every turn -- yet
-        each is thousands of tokens, so retaining them all bloats the context and
-        accelerates compaction. Here we keep the *last* user turn's screenshot
-        verbatim and collapse the screen block of every earlier user turn to a
-        timestamped breadcrumb (see :meth:`_screen_breadcrumb`), leaving the
-        ``<userRequest>`` (and all non-user messages) untouched. The breadcrumb
-        keeps each snapshot's timestamp so the model can fetch the full snapshot
-        back with ``get_past_snapshot(timestamp)``. This only reshapes the
-        per-request render; :attr:`history` and the persisted session keep the
-        full snapshots.
+        Screen snapshots reach the log from two directions: every user turn
+        embeds a ``<screenContext ts="...">...</screenContext>`` block, and tools
+        that act on the terminal (``inject_input``) report the settled screen the
+        same way. Both are thousands of tokens and both go stale the moment the
+        screen changes, so only the *last* snapshot in the log is kept verbatim;
+        every earlier one -- whatever message carries it -- collapses to a
+        timestamped breadcrumb (see :meth:`_screen_breadcrumb`) that the model
+        can expand again with ``get_past_snapshot(timestamp)``. The surrounding
+        text (the ``<userRequest>``, a tool result's prose) is left untouched.
+        This only reshapes the per-request render; :attr:`history` and the
+        persisted session keep the full snapshots.
         """
         close_tag = "</screenContext>"
 
@@ -521,7 +540,6 @@ class AgentCore:
         def has_screen(msg: dict) -> bool:
             return (
                 isinstance(msg, dict)
-                and msg.get("role") == "user"
                 and isinstance(msg.get("content"), str)
                 and open_match(msg["content"]) is not None
                 and close_tag in msg["content"]
@@ -565,7 +583,7 @@ class AgentCore:
 
         Scans the *unstripped* neutral log (:attr:`history`) -- not the
         model-facing context, which may have had this snapshot collapsed to a
-        breadcrumb -- for the user turn whose ``<screenContext ts="...">`` open
+        breadcrumb -- for the message whose ``<screenContext ts="...">`` open
         tag carries ``ts`` and returns the text between the open and close tags
         (the raw screenshot). Because the log is what gets persisted, a resumed
         session can still answer for snapshots captured before the restart.
@@ -575,7 +593,6 @@ class AgentCore:
         for msg in self.history:
             if not (
                 isinstance(msg, dict)
-                and msg.get("role") == "user"
                 and isinstance(msg.get("content"), str)
             ):
                 continue

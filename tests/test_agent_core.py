@@ -360,6 +360,29 @@ def test_only_the_newest_snapshot_is_sent_to_the_model():
     print("only the newest snapshot is sent to the model: OK")
 
 
+def test_a_screen_a_tool_reported_is_stamped_and_recoverable():
+    """A terminal tool's screen must be stamped as it lands in the history.
+
+    inject_input reports the settled screen, so the snapshot is the same size as
+    an ask-time one. Without a timestamp it can still be dropped from the
+    context, but the model is left a breadcrumb it cannot expand again.
+    """
+    host = RecordingHost(
+        tool_output="Injected 3 bytes.\n<screenContext>\nAFTER-INJECT\n</screenContext>"
+    )
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    llm = ScriptedLLM([_tool_turn("running", call), _text_turn("done")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("q", "SCREEN-NOW")
+
+    tool_msg = next(m for m in core.history if m["role"] == "tool")
+    ts = _screen_ts(tool_msg)
+    assert ts, tool_msg
+    assert "AFTER-INJECT" in core._tool_get_past_snapshot({"timestamp": ts})
+    print("a tool-reported screen is stamped and recoverable: OK")
+
+
 def test_a_stripped_snapshot_is_fetched_back_by_timestamp():
     host = RecordingHost()
     llm = ScriptedLLM([_text_turn("a"), _text_turn("b")])
@@ -504,6 +527,7 @@ def main():
     test_missing_usage_leaves_the_badge_alone()
     test_each_snapshot_is_stamped_with_a_unique_timestamp()
     test_only_the_newest_snapshot_is_sent_to_the_model()
+    test_a_screen_a_tool_reported_is_stamped_and_recoverable()
     test_a_stripped_snapshot_is_fetched_back_by_timestamp()
     test_get_past_snapshot_rejects_an_unknown_timestamp()
     test_past_snapshots_survive_a_resumed_session()

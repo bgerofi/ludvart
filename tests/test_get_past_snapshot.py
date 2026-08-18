@@ -140,6 +140,68 @@ def test_stripping_keeps_timestamp_breadcrumb_and_snapshot_retrievable():
     print("stripping keeps ts breadcrumb + snapshot retrievable: OK")
 
 
+def test_a_tool_results_screen_is_stamped_and_then_superseded():
+    """inject_input's screen must age out of the context like a user turn's.
+
+    It reports the settled terminal, so it is just as big as an ask-time
+    snapshot and goes just as stale. While the stripper only looked at user
+    turns, every injection left a full screen dump in the context forever: on a
+    real session those tool results were over half the tokens sent.
+    """
+    r = _core()
+    injected = AgentCore._stamp_screenshot(
+        "Injected 5 byte(s) into the terminal.\n"
+        "<screenContext>\nTOOL SCREEN BODY\n</screenContext>"
+    )
+    ts_m = re.search(r'ts="([^"]+)"', injected)
+    assert ts_m, injected
+    ts_tool = ts_m.group(1)
+
+    ts_new = "2026-07-06T09:30:00.000000002"
+    r.history = [
+        {"role": "assistant", "content": "injecting"},
+        {"role": "tool", "content": injected},
+        _user_turn(ts_new, "NEW SCREEN BODY", "new q"),
+    ]
+
+    stripped = AgentCore._strip_old_screenshots(r.history)
+    tool_msg = stripped[1]["content"]
+    assert "TOOL SCREEN BODY" not in tool_msg, tool_msg
+    assert f"get_past_snapshot({ts_tool})" in tool_msg, tool_msg
+    assert "Injected 5 byte(s)" in tool_msg, tool_msg
+    assert "NEW SCREEN BODY" in stripped[2]["content"]
+
+    assert "TOOL SCREEN BODY" in r._tool_get_past_snapshot({"timestamp": ts_tool})
+    print("a tool result's screen is stamped and superseded: OK")
+
+
+def test_the_newest_screen_survives_even_when_a_tool_reported_it():
+    r = _core()
+    ts_old = "2026-07-06T09:00:00.000000001"
+    r.history = [
+        _user_turn(ts_old, "OLD SCREEN BODY", "q"),
+        {"role": "assistant", "content": "injecting"},
+        {
+            "role": "tool",
+            "content": AgentCore._stamp_screenshot(
+                "<screenContext>\nFRESHEST SCREEN\n</screenContext>"
+            ),
+        },
+    ]
+    stripped = AgentCore._strip_old_screenshots(r.history)
+    assert "FRESHEST SCREEN" in stripped[2]["content"]
+    assert "OLD SCREEN BODY" not in stripped[0]["content"]
+    print("the newest screen survives whoever reported it: OK")
+
+
+def test_stamping_leaves_an_already_stamped_screen_alone():
+    ts = "2026-07-06T09:00:00.000000001"
+    text = f'<screenContext ts="{ts}">\nBODY\n</screenContext>'
+    assert AgentCore._stamp_screenshot(text) == text
+    assert AgentCore._stamp_screenshot("no screen here") == "no screen here"
+    print("stamping is idempotent: OK")
+
+
 def main():
     test_utc_ns_timestamp_format()
     test_get_past_snapshot_returns_stored_body()
@@ -147,6 +209,9 @@ def main():
     test_get_past_snapshot_unknown_timestamp_errors()
     test_get_past_snapshot_missing_timestamp_errors()
     test_stripping_keeps_timestamp_breadcrumb_and_snapshot_retrievable()
+    test_a_tool_results_screen_is_stamped_and_then_superseded()
+    test_the_newest_screen_survives_even_when_a_tool_reported_it()
+    test_stamping_leaves_an_already_stamped_screen_alone()
     print("\nALL get_past_snapshot tests passed.")
 
 
