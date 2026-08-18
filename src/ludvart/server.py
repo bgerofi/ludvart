@@ -17,7 +17,7 @@ import os
 import sys
 import threading
 import time
-from typing import Callable, Sequence
+from typing import BinaryIO, Callable, Sequence
 
 from .agent_core import DEFAULT_CLIENT_TOOLS, AgentCore
 from .llm import LLMClient, ProviderConfig, ToolCall, ToolSpec, Turn
@@ -701,19 +701,34 @@ def _request_loop(channel: FrameChannel, manager, core: AgentCore) -> None:
 
 
 
+def claim_stdout() -> BinaryIO:
+    """Take exclusive ownership of the protocol stream.
+
+    "Nothing else may touch stdout" is not something the backend can ask of the
+    libraries it loads -- one stray ``print`` from deep inside a provider SDK
+    lands mid-frame and desynchronises the client for the rest of the session.
+    So fd 1 is handed over to stderr and the protocol keeps a private dup.
+    """
+    sys.stdout.flush()
+    private = os.dup(1)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+    return os.fdopen(private, "wb", buffering=0)
+
+
 def serve_main(argv: Sequence[str] | None = None) -> int:
     """CLI entry for ``ludvart serve``: bind the framed channel to stdio.
 
-    Reads frames from stdin and writes them to stdout; nothing else may touch
-    stdout or the protocol stream is corrupted.
+    Reads frames from stdin and writes them to a private dup of stdout; see
+    :func:`claim_stdout` for why nothing else can reach it.
     """
     from .llm import ensure_context_windows_file
 
+    writer = claim_stdout()
     # The backend owns every model concern now, including the editable
     # context-window table, so seed it here rather than on the client.
     ensure_context_windows_file()
     reader = sys.stdin.buffer
-    writer = sys.stdout.buffer
     channel = FrameChannel(reader, writer, max_frame=DEFAULT_MAX_FRAME)
     try:
         serve(channel)
