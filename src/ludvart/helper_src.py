@@ -91,7 +91,12 @@ def helper_install_command() -> str:
     it is missing, outdated, or modified. It prints a single machine-parseable
     line the harness reads back::
 
-        LUDVART_HELPER_INIT status=<installed|current> version=<v> ok=<0|1> reason=<r>
+        LUDVART_HELPER_INIT status=<installed|current> version=<v> ok=<0|1>
+                            reason=<r> bytes=<n> got=<md5>
+
+    ``bytes``/``got`` describe the payload as it actually arrived, so a command
+    mangled on its way through the terminal is distinguishable from a write that
+    genuinely failed.
 
     Only the remote's own ``python3`` and ``HOME`` are used, so the exact same
     command works whether the foreground shell is local or an ssh session on
@@ -112,10 +117,12 @@ def helper_install_command() -> str:
         "_=(cur==want) or (os.makedirs(os.path.dirname(p),exist_ok=True),"
         'open(p,"wb").write(src),os.chmod(p,0o755));'
         'new=hashlib.md5(open(p,"rb").read()).hexdigest();'
-        'print("LUDVART_HELPER_INIT status=%s version=%s ok=%s reason=%s"%('
+        'print("LUDVART_HELPER_INIT status=%s version=%s ok=%s reason=%s '
+        'bytes=%d got=%s"%('
         '"current" if cur==want else "installed",ver,'
         '"1" if new==want else "0",'
-        '"match" if cur==want else ("missing" if cur=="" else "stale_or_modified")))'
+        '"match" if cur==want else ("missing" if cur=="" else "stale_or_modified"),'
+        "len(src),new))"
     )
     # The payload is base64 (no single quotes) and the program uses only double
     # quotes internally, so wrapping the whole thing in single quotes is safe.

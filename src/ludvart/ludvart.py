@@ -35,7 +35,12 @@ from .panel import AiPanel
 from .render import Compositor, render_row
 from .screen import LudvartScreen
 from .terminal_host import TerminalHost
-from .helper_src import LUDVART_HELPER_VERSION, helper_install_command
+from .helper_src import (
+    LUDVART_HELPER_MD5,
+    LUDVART_HELPER_SOURCE,
+    LUDVART_HELPER_VERSION,
+    helper_install_command,
+)
 from .session import (
     SLASH_COMMAND_HELP,
     complete_slash,
@@ -1430,9 +1435,19 @@ class Ludvart:
             )
         status, ver, ok, reason = m.groups()
         if ok != "1":
+            got = re.search(r"bytes=(\d+) got=(\w+)", snapshot)
+            detail = ""
+            if got:
+                detail = (
+                    f" The copy that arrived was {got.group(1)} bytes "
+                    f"(md5 {got.group(2)[:8]}), expected "
+                    f"{len(LUDVART_HELPER_SOURCE)} bytes "
+                    f"(md5 {LUDVART_HELPER_MD5[:8]}) -- the install command was "
+                    "corrupted on its way through the terminal. Try again."
+                )
             return (
                 f"ludvart_helper install FAILED (reason={reason}); the file on disk "
-                "does not match the expected checksum."
+                "does not match the expected checksum." + detail
             )
         if status == "current":
             return f"ludvart_helper is already up to date (v{ver}, checksum verified)."

@@ -12,7 +12,11 @@ Run:
 
 from ludvart.ludvart import Ludvart
 from ludvart.panel import AiPanel
-from ludvart.helper_src import LUDVART_HELPER_VERSION, helper_install_command
+from ludvart.helper_src import (
+    LUDVART_HELPER_SOURCE,
+    LUDVART_HELPER_VERSION,
+    helper_install_command,
+)
 
 
 def make_ludvart(with_llm: bool = True):
@@ -91,6 +95,13 @@ def test_parse_helper_init_cases():
     assert "up to date" in p(f"LUDVART_HELPER_INIT status=current version={v} ok=1 reason=match")
     assert "reinstalled" in p(f"LUDVART_HELPER_INIT status=installed version={v} ok=1 reason=stale_or_modified")
     assert "FAILED" in p(f"LUDVART_HELPER_INIT status=installed version={v} ok=0 reason=stale_or_modified")
+    # A corrupted install must say what actually arrived, not just "mismatch".
+    corrupt = p(
+        f"LUDVART_HELPER_INIT status=installed version={v} ok=0 "
+        "reason=stale_or_modified bytes=9000 got=deadbeefdeadbeef"
+    )
+    assert "9000 bytes" in corrupt and "deadbeef" in corrupt, corrupt
+    assert str(len(LUDVART_HELPER_SOURCE)) in corrupt, corrupt
     assert "Could not confirm" in p("nothing relevant here")
     # Echo-safe: the command echo contains 'status=%s' but the real line wins.
     echoed = (
