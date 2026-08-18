@@ -82,48 +82,71 @@ def helper_install_payload_b64() -> str:
     return base64.b64encode(LUDVART_HELPER_SOURCE).decode("ascii")
 
 
+#: Base64 characters per staged line. The payload can only reach the foreground
+#: host by being typed at its shell, and a tty silently drops characters when one
+#: huge line outruns its input buffer -- a 21k single-line install lost 358 bytes
+#: on a Rocky 9 VM. Short lines let the shell drain between them.
+HELPER_CHUNK_CHARS = 512
+
+#: Where the base64 is assembled before it is decoded and verified.
+HELPER_STAGE_PATH = "~/.ludvart/bin/.ludvart_helper.b64"
+
+
 def helper_install_command() -> str:
-    """Build a one-line shell command that installs/repairs the helper.
+    """Build the shell commands that install/repair the helper.
 
-    The command runs the remote ``python3`` (which the helper itself requires)
-    to compare the on-disk md5 against the pinned golden md5 *without executing*
-    the existing file, and rewrites it from an embedded base64 payload only when
-    it is missing, outdated, or modified. It prints a single machine-parseable
-    line the harness reads back::
+    Returns a newline-separated block of complete, independent commands: one to
+    create the staging file, a run of ``printf`` appends carrying the base64 in
+    small pieces, and a final ``python3`` step that decodes the staged text,
+    checks it against the pinned golden md5, and only then writes the helper --
+    so a mangled transfer can never overwrite a good copy. It prints two
+    machine-parseable lines the harness reads back::
 
-        LUDVART_HELPER_INIT status=<installed|current> version=<v> ok=<0|1>
-                            reason=<r> bytes=<n> got=<md5>
+        LUDVART_HELPER_INIT status=<installed|current> version=<v> ok=<0|1> reason=<r>
+        LUDVART_HELPER_DATA bytes=<n> got=<md5>
 
     ``bytes``/``got`` describe the payload as it actually arrived, so a command
     mangled on its way through the terminal is distinguishable from a write that
-    genuinely failed.
+    genuinely failed. They are printed separately to survive line wrapping.
 
     Only the remote's own ``python3`` and ``HOME`` are used, so the exact same
     command works whether the foreground shell is local or an ssh session on
     another host.
     """
     payload = helper_install_payload_b64()
+    stage = HELPER_STAGE_PATH
+    lines = ["mkdir -p ~/.ludvart/bin && : > " + stage]
+    for i in range(0, len(payload), HELPER_CHUNK_CHARS):
+        lines.append(
+            "printf %s '" + payload[i:i + HELPER_CHUNK_CHARS] + "' >> " + stage
+        )
     # Note: the runtime ``%s``/``%(`` below are LITERAL parts of the python the
     # remote executes -- this string is assembled by concatenation (no % / format
     # applied here), so they need no escaping.
     py = (
         "import base64,hashlib,os;"
-        'p=os.path.expanduser("~/.ludvart/bin/ludvart_helper");'
+        'd=os.path.expanduser("~/.ludvart/bin");'
+        'p=os.path.join(d,"ludvart_helper");'
+        's=os.path.join(d,".ludvart_helper.b64");'
         'want="' + LUDVART_HELPER_MD5 + '";'
         'ver="' + LUDVART_HELPER_VERSION + '";'
-        'src=base64.b64decode("' + payload + '");'
+        'b="".join(open(s).read().split()).rstrip("=");'
+        # Re-pad so a truncated transfer still decodes to something we can
+        # measure, instead of raising and leaving no diagnosis on screen.
+        'src=base64.b64decode(b+"="*(-len(b)%4));'
+        "got=hashlib.md5(src).hexdigest();"
         'cur=(hashlib.md5(open(p,"rb").read()).hexdigest() '
         'if os.path.isfile(p) else "");'
-        "_=(cur==want) or (os.makedirs(os.path.dirname(p),exist_ok=True),"
-        'open(p,"wb").write(src),os.chmod(p,0o755));'
-        'new=hashlib.md5(open(p,"rb").read()).hexdigest();'
-        'print("LUDVART_HELPER_INIT status=%s version=%s ok=%s reason=%s '
-        'bytes=%d got=%s"%('
+        "_=(cur!=want and got==want) and ("
+        'os.makedirs(d,exist_ok=True),open(p,"wb").write(src),os.chmod(p,0o755));'
+        "_=os.path.isfile(s) and os.remove(s);"
+        'print("LUDVART_HELPER_INIT status=%s version=%s ok=%s reason=%s"%('
         '"current" if cur==want else "installed",ver,'
-        '"1" if new==want else "0",'
-        '"match" if cur==want else ("missing" if cur=="" else "stale_or_modified"),'
-        "len(src),new))"
+        '"1" if (cur==want or got==want) else "0",'
+        '"match" if cur==want else ("missing" if cur=="" else "stale_or_modified")));'
+        'print("LUDVART_HELPER_DATA bytes=%d got=%s"%(len(src),got))'
     )
     # The payload is base64 (no single quotes) and the program uses only double
     # quotes internally, so wrapping the whole thing in single quotes is safe.
-    return "python3 -c '" + py + "'"
+    lines.append("python3 -c '" + py + "'")
+    return "\n".join(lines)

@@ -223,6 +223,23 @@ class Ludvart:
     #: in the normal (shell/REPL) case.
     SETTLE_MAX_WAIT = 20.0
 
+    #: Bytes per write, and the pause between writes, when feeding the pty a
+    #: large block. An unpaced burst outruns the tty's input buffer and the
+    #: dropped characters are silent.
+    INJECT_CHUNK_BYTES = 256
+    INJECT_CHUNK_PAUSE = 0.01
+
+    #: Cap (seconds) on waiting for the helper install to report its result.
+    HELPER_INIT_MAX_WAIT = 90.0
+
+    #: The install result line. ``status`` is constrained to real words so the
+    #: echoed command template (which contains ``status=%s``) is never mistaken
+    #: for the result.
+    _HELPER_INIT_RE = re.compile(
+        r"LUDVART_HELPER_INIT status=(installed|current) version=(\S+) "
+        r"ok=([01]) reason=(\w+)"
+    )
+
     #: A full-screen (alternate-buffer) app -- vim, less, htop, screen, tmux --
     #: has no learnable shell prompt and may repaint a status line/clock forever,
     #: so the prompt-return fast path never fires and the quiescence fallback can
@@ -1381,16 +1398,39 @@ class Ludvart:
         command = helper_install_command()
 
         def worker() -> str:
-            prompt_prefix = self._current_prompt_prefix()
-            self._write_all(self._master_fd, command.encode("utf-8") + b"\r")
-            snapshot = self._wait_for_injection_to_settle(command, prompt_prefix)
-            return self._parse_helper_init(snapshot)
+            self._write_paced(self._master_fd, command.replace("\n", "\r").encode("utf-8") + b"\r")
+            return self._parse_helper_init(self._wait_for_helper_init())
 
         self._start_action(
             worker,
             info=f"Installing/verifying ludvart_helper v{LUDVART_HELPER_VERSION}\u2026",
             activity="Installing ludvart_helper",
         )
+
+    def _write_paced(self, fd: int, data: bytes) -> None:
+        """Feed the pty in small bursts so its input buffer can keep up.
+
+        A tty drops characters when a write outruns it, which corrupts the
+        install payload silently.
+        """
+        for i in range(0, len(data), self.INJECT_CHUNK_BYTES):
+            self._write_all(fd, data[i:i + self.INJECT_CHUNK_BYTES])
+            time.sleep(self.INJECT_CHUNK_PAUSE)
+
+    def _wait_for_helper_init(self) -> str:
+        """Poll the screen for the install result line.
+
+        The install is many short commands, so the shell prompt returns between
+        them and the generic settle heuristic would call it done after the first.
+        """
+        deadline = time.time() + self.HELPER_INIT_MAX_WAIT
+        text = self._safe_snapshot() or ""
+        while time.time() < deadline:
+            if self._HELPER_INIT_RE.search(text):
+                break
+            time.sleep(self.SETTLE_POLL)
+            text = self._safe_snapshot() or text
+        return text
 
 
     def _cmd_revoke_approval(self) -> None:
@@ -1422,11 +1462,7 @@ class Ludvart:
         real words so the echoed command template (which contains ``status=%s``)
         is not mistaken for the result.
         """
-        m = re.search(
-            r"LUDVART_HELPER_INIT status=(installed|current) version=(\S+) "
-            r"ok=([01]) reason=(\w+)",
-            snapshot,
-        )
+        m = Ludvart._HELPER_INIT_RE.search(snapshot)
         if m is None:
             return (
                 "Could not confirm ludvart_helper install -- no result seen. Make "

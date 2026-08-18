@@ -10,6 +10,8 @@ Run:
         && python tests/test_ai_init_helpers.py
 """
 
+import time
+
 from ludvart.ludvart import Ludvart
 from ludvart.panel import AiPanel
 from ludvart.helper_src import (
@@ -51,9 +53,9 @@ def test_init_helpers_is_deterministic():
     # Stub the injection so the "screen" contains a realistic install result.
     written: list = []
     r._write_all = lambda fd, data: written.append(data)
-    r._current_prompt_prefix = lambda: "$ "
-    r._wait_for_injection_to_settle = (
-        lambda cmd, prefix: "$ ...\n"
+    r.INJECT_CHUNK_PAUSE = 0
+    r._wait_for_helper_init = (
+        lambda: "$ ...\n"
         f"LUDVART_HELPER_INIT status=installed version={LUDVART_HELPER_VERSION} "
         "ok=1 reason=missing\n$ "
     )
@@ -61,9 +63,13 @@ def test_init_helpers_is_deterministic():
 
     assert asks == [], "the LLM must NOT be involved in /init_helpers anymore"
     assert len(actions) == 1, actions
-    # The injected bytes are the golden install command + Enter.
-    assert written and written[0].endswith(b"\r")
-    assert written[0][:-1].decode() == helper_install_command()
+    # The injected bytes are the golden install command + Enter, fed in small
+    # bursts so the tty is never outrun.
+    assert written and written[-1].endswith(b"\r")
+    assert max(len(b) for b in written) <= r.INJECT_CHUNK_BYTES
+    sent = b"".join(written).decode()
+    assert sent == helper_install_command().replace("\n", "\r") + "\r"
+    assert "\n" not in sent, "each command must be submitted with a carriage return"
     # The parsed status is shown as a system line.
     msgs = [t for t in r._panel.messages]
     assert msgs[0][0] == "system" and msgs[0][1] == "> /init_helpers"
@@ -76,9 +82,9 @@ def test_init_helpers_works_without_llm():
     # No provider configured must NOT block a deterministic install.
     r, actions, asks = make_ludvart(with_llm=False)
     r._write_all = lambda fd, data: None
-    r._current_prompt_prefix = lambda: "$ "
-    r._wait_for_injection_to_settle = (
-        lambda cmd, prefix: f"LUDVART_HELPER_INIT status=current "
+    r.INJECT_CHUNK_PAUSE = 0
+    r._wait_for_helper_init = (
+        lambda: f"LUDVART_HELPER_INIT status=current "
         f"version={LUDVART_HELPER_VERSION} ok=1 reason=match"
     )
     submit(r, "/init_helpers")
@@ -86,6 +92,29 @@ def test_init_helpers_works_without_llm():
     assert len(actions) == 1
     assert any("up to date" in t for k, t in r._panel.messages if k == "system")
     print("/init_helpers works without an LLM: OK")
+
+
+def test_the_wait_gives_up_instead_of_hanging():
+    """The result must be waited for by name, and the wait must be bounded.
+
+    The install is many short commands, so the shell prompt returns between
+    them; the generic settle heuristic would declare victory after the first
+    one, and its LLM fallback could stall for as long as it liked.
+    """
+    r, _, _ = make_ludvart(with_llm=True)
+    r.HELPER_INIT_MAX_WAIT = 0.2
+    r.SETTLE_POLL = 0.01
+    r._safe_snapshot = lambda: "$ mkdir -p ~/.ludvart/bin\n$ "
+    started = time.time()
+    assert "Could not confirm" in r._parse_helper_init(r._wait_for_helper_init())
+    assert time.time() - started < 5, "the wait is not bounded"
+
+    seen = ["$ ", "$ ", f"LUDVART_HELPER_INIT status=installed "
+            f"version={LUDVART_HELPER_VERSION} ok=1 reason=missing"]
+    r.HELPER_INIT_MAX_WAIT = 5
+    r._safe_snapshot = lambda: seen.pop(0) if len(seen) > 1 else seen[0]
+    assert "installed" in r._parse_helper_init(r._wait_for_helper_init())
+    print("the install wait is by-result and bounded: OK")
 
 
 def test_parse_helper_init_cases():
@@ -148,6 +177,7 @@ def test_tab_completion_completes_a_subcommand():
 if __name__ == "__main__":
     test_init_helpers_is_deterministic()
     test_init_helpers_works_without_llm()
+    test_the_wait_gives_up_instead_of_hanging()
     test_parse_helper_init_cases()
     test_autoinit_removed()
     test_tab_completion()

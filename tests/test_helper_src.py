@@ -139,13 +139,21 @@ def test_a_wrong_argument_answers_with_the_right_one():
 
 def test_command_is_quote_safe():
     cmd = helper_install_command()
-    # Wrapped in single quotes; the inner program must contain no single quote
-    # (so the outer shell quoting can never be broken by the payload/program).
-    assert cmd.startswith("python3 -c '") and cmd.endswith("'")
-    inner = cmd[len("python3 -c '"):-1]
+    lines = cmd.split("\n")
+    # Every line must be a complete command on its own: a line lost in transit
+    # can then only shorten the payload (which the md5 gate catches), never
+    # strand the shell waiting for a continuation.
+    assert lines[0].startswith("mkdir -p ")
+    assert lines[-1].startswith("python3 -c '") and lines[-1].endswith("'")
+    for line in lines[1:-1]:
+        assert line.startswith("printf %s '") and "' >> " in line
+    # No line may be big enough to outrun a tty's input buffer.
+    assert max(len(line) for line in lines) < 1024, max(len(l) for l in lines)
+    inner = lines[-1][len("python3 -c '"):-1]
     assert "'" not in inner, "inner program must not contain a single quote"
-    # The payload embedded in the command is exactly the golden source b64.
-    assert helper_install_payload_b64() in cmd
+    # The staged chunks reassemble into exactly the golden source's base64.
+    staged = "".join(line.split("'")[1] for line in lines[1:-1])
+    assert staged == helper_install_payload_b64()
     print("command is quote-safe + carries golden payload: OK")
 
 
@@ -191,6 +199,35 @@ def test_install_current_and_repair():
     print("install / current / repair round-trip: OK")
 
 
+def test_a_mangled_transfer_never_overwrites_a_good_helper():
+    """Drop a chunk mid-transfer: the install must refuse, not write garbage.
+
+    The payload can only reach the host by being typed at its shell, and a tty
+    drops characters silently when it is outrun. base64 decoding is happy to
+    swallow that damage, so the md5 has to be checked before the write.
+    """
+    cmd = helper_install_command()
+    with tempfile.TemporaryDirectory() as home:
+        dest = os.path.join(home, ".ludvart", "bin", "ludvart_helper")
+        _run(cmd, home)
+        with open(dest, "ab") as fh:
+            fh.write(b"\n# an older build\n")
+        stale = open(dest, "rb").read()
+
+        lines = cmd.split("\n")
+        del lines[2]  # a chunk never made it to the shell
+        out = _run("\n".join(lines), home).stdout
+        assert "ok=0" in out, out
+        assert open(dest, "rb").read() == stale, "clobbered the helper with garbage"
+        arrived = re.search(r"bytes=(\d+) got=(\w+)", out)
+        assert arrived, out
+        assert int(arrived.group(1)) < len(LUDVART_HELPER_SOURCE)
+        assert arrived.group(2) != LUDVART_HELPER_MD5
+        stage = os.path.join(home, ".ludvart", "bin", ".ludvart_helper.b64")
+        assert not os.path.exists(stage), "staging file left behind"
+    print("a mangled transfer never overwrites a good helper: OK")
+
+
 if __name__ == "__main__":
     test_asset_integrity()
     test_source_is_py36_compatible()
@@ -199,4 +236,5 @@ if __name__ == "__main__":
     test_a_wrong_argument_answers_with_the_right_one()
     test_command_is_quote_safe()
     test_install_current_and_repair()
+    test_a_mangled_transfer_never_overwrites_a_good_helper()
     print("all helper_src tests passed")
