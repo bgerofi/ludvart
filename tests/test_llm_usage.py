@@ -44,6 +44,7 @@ def test_known_context_window_claude4_is_1m():
     from ludvart.llm import _known_context_window
     assert _known_context_window("claude-opus-4-8") == 1_000_000
     assert _known_context_window("claude-sonnet-4-5") == 1_000_000
+    assert _known_context_window("claude-opus-5") == 500_000
     assert _known_context_window("claude-3-5-sonnet") == 200_000
     assert _known_context_window("claude-3-opus") == 200_000
     print("known context window claude4 is 1M: OK")

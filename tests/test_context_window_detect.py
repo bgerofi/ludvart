@@ -69,6 +69,8 @@ def test_known_table():
         try:
             ensure_context_windows_file()  # write the defaults into the temp file
             assert _known_context_window("claude-opus-4-6") == 1_000_000  # Claude 4 = 1M
+            # Opus 5 must be matched before the generic "claude" 200k entry.
+            assert _known_context_window("github_copilot/claude-opus-5") == 500_000
             assert _known_context_window("claude-3-5-sonnet") == 200_000  # older = 200k
             assert _known_context_window("gpt-4o-mini") == 128_000
             assert _known_context_window("gpt-4-turbo-2024") == 128_000

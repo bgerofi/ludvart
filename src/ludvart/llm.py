@@ -671,6 +671,7 @@ _DEFAULT_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
     # proxy endpoints don't expose the models API, so these fallbacks matter).
     # The Claude 4 family (Opus 4.x / Sonnet 4.x) supports a 1M-token window;
     # older Claude models are 200k. Most specific entries must come first.
+    ("claude-opus-5", 500_000),
     ("claude-opus-4", 1_000_000),
     ("claude-sonnet-4", 1_000_000),
     ("claude", 200_000),
