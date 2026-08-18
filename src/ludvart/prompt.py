@@ -11,101 +11,60 @@ from __future__ import annotations
 import os
 from typing import Sequence
 
+from .helper_src import LUDVART_HELPER_SPEC, LUDVART_HELPER_VERSION
 from .llm import ToolSpec
 
-# Appended verbatim to the LLM system prompt on every invocation. Documents the
-# self-generated, persistent helper tooling the agent can maintain on the remote
-# machine to work around the harness only being able to see the terminal.
-LUDVART_HELPERS_DOC = """\
-## ludvart helpers (self-generated tools on the remote machine)
+# Appended verbatim to the LLM system prompt on every invocation. The helper's
+# interface is spelled out by the helper itself: the reference section below is
+# lifted straight out of the shipped asset, so the instructions the model reads
+# cannot drift from the code it is calling.
+LUDVART_HELPERS_DOC = (
+    """\
+## ludvart helpers (persistent tools on the remote machine)
 
 The harness only sees the terminal; it has no direct file/exec access to the
-remote box. To work around this, ludvart maintains small, dependency-free helper
-tools under ~/.ludvart/bin/ on the remote machine. These persist across sessions.
+remote box. To work around this, ludvart maintains a small, dependency-free
+helper at ~/.ludvart/bin/ludvart_helper on the remote machine. It persists
+across sessions.
 
-### First step every session (cheap): detect them
+### First step every session (cheap): detect it
 Run:  ls -la ~/.ludvart/bin/ 2>/dev/null && ~/.ludvart/bin/ludvart_helper info 2>/dev/null
-If `ludvart_helper` exists, prefer it for file read/edit/search (see spec below).
-If it's missing and a task would benefit, offer to (re)create it, or do so when
-the user says "initialize your helpers".
+If it is there, prefer it for file read/edit/search (see the reference below).
+If it is missing or reports an older version than the one documented here, tell
+the user to run the /init_helpers command in the ludvart panel; that installs
+and verifies the exact helper this prompt describes. Do NOT hand-write the
+helper yourself.
 
-IMPORTANT: the helper is NOT on PATH. Typing a bare `ludvart_helper` will fail
-with "command not found". ALWAYS invoke it by its full path:
+IMPORTANT: the helper is NOT on PATH. Invoking it by bare name fails with
+"command not found". ALWAYS call it by its full path:
     ~/.ludvart/bin/ludvart_helper <subcommand> ...
 If you see "command not found", the fix is the full path -- do not conclude the
 helper is missing until you have run `ls -la ~/.ludvart/bin/`.
 
-### "initialize your helpers" ritual
-  1. Detect what exists (ls ~/.ludvart/bin, and `~/.ludvart/bin/ludvart_helper info`).
-  2. Confirm desired capabilities (default set: read, write, append, replace,
-     search, run).
-  3. (Re)generate helper(s) into ~/.ludvart/bin/, chmod +x, then VALIDATE:
-     python3 -c "import ast; ast.parse(open(PATH).read())" and a smoke test.
-     Build large files by appending in chunks via QUOTED heredocs with
-     inject_input escape-interpretation DISABLED (so \\n, backslashes, quotes
-     arrive verbatim); verify with `wc -l` after each chunk.
-  4. Report what was created and how to call it.
-### ludvart_helper - precise interface (v0.1.0, stdlib Python 3 only)
-Path: ~/.ludvart/bin/ludvart_helper   (executable, NOT on PATH -- always call it
-by this full path). The subcommands below are shown without the path for
-brevity; prepend ~/.ludvart/bin/ludvart_helper to every one of them.
-Design: every CONTENT payload is base64 (immune to quoting/newline/escape
-corruption); every result is sentinel-framed with an exit code, so output is
-parsed deterministically, NOT inferred from screen text.
+"""
+    + "### ludvart_helper "
+    + LUDVART_HELPER_VERSION
+    + " -- interface reference (the helper's own spec)\n"
+    + LUDVART_HELPER_SPEC
+    + """
 
-Output frame (always):
-    <<<LUDVART:BEGIN op=NAME>>>
-    <base64 payload, present only when there is output>
-    <<<LUDVART:END op=NAME exit=CODE  key=val ...>>>
-To read a payload: take the line(s) between BEGIN and END and `base64 -d`.
-Trust the `exit=` field for success/failure.
-
-Subcommands:
-  read PATH [--start N] [--end M]
-      Payload = base64 of file (or 1-indexed inclusive line range).
-      Meta: path=, lines=<total>, range=A-B.
-  write PATH --b64 DATA
-      Overwrite PATH with base64-decoded DATA (creates parent dirs).
-      Meta: path=, bytes=.
-  append PATH --b64 DATA
-      Append base64-decoded DATA to PATH. Meta: path=, bytes=.
-  replace PATH --old-b64 A --new-b64 B [--count N]
-      Literal (non-regex) string replace of A->B in PATH. Replaces all
-      occurrences unless --count limits it.
-      exit=2 with meta error=old_not_found if A is absent (file unchanged).
-      Meta on success: path=, replaced=<count>.
-  search PATTERN [--path P] [--glob G]
-      Recursive Python-regex search. P defaults to "." (a file or dir).
-      --glob filters filenames (e.g. "*.py"). Skips .git, node_modules,
-      __pycache__. Payload = base64 of newline-joined "file:line:text" hits.
-      exit=0 if any match, exit=1 if none. Meta: matches=.
-  run --b64 CMD
-      Run base64-decoded CMD via the shell, streaming its stdout and stderr
-      directly to the terminal. The helper then prints
-      `<<<LUDVART:END op=run exit=CODE>>>`; CODE is the command's real exit
-      status. NOTE: for a pipeline/;-list this is the status of the LAST
-      command, same as normal shell semantics.
-  info
-      Payload = base64 of "ludvart_helper <ver>\\ncaps=...\\npython=...".
-      Use this (or `~/.ludvart/bin/ludvart_helper <subcmd> -h`) to re-derive the
-      interface in a fresh session if this spec is ever unavailable.
 ### Usage conventions
-  - Pass content/commands as base64:  --b64 "$(printf %s "$TEXT" | base64 -w0)"
-        (use `base64 -w0` to avoid line wrapping).
-    - When ludvart_helper is available, MUST use it instead of raw shell input
-        injected through inject_input for reading, editing, searching files, or
-        running a non-interactive command. It base64-encodes payloads, avoids
-        quoting/escape corruption, and gives a reliable exit code. Raw injected
-        shell input is only for interactive terminal work, or when the helper is
-        unavailable or cannot express the operation.
-  - Parse results from the LUDVART:BEGIN/END frame and base64-decode the payload;
-    rely on `exit=` rather than reading success from screen text.
-  - Keep helpers under ~/.ludvart/ (outside the user's repos) so they never show
-    up in git status.
-  - The helper is a convenience, not a requirement. If it's missing, offer to
-    recreate it, but don't block work on it.
-  - When self-recovering the interface, run `~/.ludvart/bin/ludvart_helper info`
-    and `~/.ludvart/bin/ludvart_helper <subcmd> -h`."""
+  - Build the base64 arguments with the native 'b64_encode' tool and read the
+    result frames with 'b64_decode', rather than piping through 'printf |
+    base64' / 'base64 -d' in the shell.
+  - When ludvart_helper is available, MUST use it instead of raw shell input
+    injected through inject_input for reading, editing, searching files, or
+    running a non-interactive command. Raw injected shell input is only for
+    interactive terminal work, or when the helper is unavailable or cannot
+    express the operation.
+  - Prefer --expect-count (or structured-patch) over an unguarded replace, and
+    --dry-run when you want to see the diff before committing to an edit.
+  - Keep helper state under ~/.ludvart/ (outside the user's repos) so it never
+    shows up in git status. Note that an edit leaves a PATH.ludvart.bak beside
+    the file; clean it up when you are done.
+  - The helper is a convenience, not a requirement. If it is missing, say so and
+    fall back to injected shell input; do not block work on it."""
+)
 
 #: Cap on how much of ``~/.ludvart/SELF.md`` is folded into the prompt.
 SELF_MD_MAX_CHARS = 8192
@@ -187,13 +146,6 @@ def system_prompt(tools: Sequence[ToolSpec]) -> str:
         "'b64_encode'/'b64_decode' tools to build the base64 payloads for "
         "ludvart_helper and to read its base64 result frames, instead of "
         "'printf | base64' / 'base64 -d' in the shell.\n\n"
-        "(ludvart_helper v0.2.0+ adds safer edits: 'replace --expect-count N' "
-        "fails without writing if the match count differs; '--dry-run' on "
-        "replace/write returns a unified diff instead of writing; "
-        "'replace-range --start N --end M --b64 DATA' swaps a line range; "
-        "'structured-patch PATH --b64 JSON' applies multiple exact edits atomically; "
-        "writes auto-save a .ludvart.bak, and a .py edit that breaks syntax "
-        "returns exit=4 (error=py_syntax) so failures are explicit.)\n\n"
         + LUDVART_HELPERS_DOC
         + load_self_md()
     )

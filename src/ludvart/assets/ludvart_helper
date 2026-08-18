@@ -1,8 +1,104 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
 
-VER = "0.2.3"
-CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info"
+VER = "0.3.0"
+CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
+
+# The authoritative interface reference. ludvart folds this verbatim into the
+# model's system prompt (read straight from this file, never executed), so the
+# instructions and the code can only ever ship together. Keep it ASCII, keep
+# every example on the helper's full path, and update it in the same edit as any
+# behaviour change here.
+SPEC = """\
+Path: ~/.ludvart/bin/ludvart_helper  -- an executable that is NOT on PATH.
+Invoking it by bare name fails with "command not found"; always spell out the
+full path, exactly as every example below does. Requires only python3 (3.6+)
+and the standard library.
+
+Why to prefer it over typing shell commands: content is passed as base64, so
+quoting, newlines, backslashes and escapes cannot corrupt it, and every result
+carries an explicit exit code instead of having to be guessed from screen text.
+
+Result framing (every subcommand except run):
+    <<<LUDVART:BEGIN op=NAME>>>
+    <one line of base64; present only when the op returns data>
+    <<<LUDVART:END op=NAME exit=CODE key=value ...>>>
+Base64-decode the line between BEGIN and END to get the payload. Decide success
+or failure from exit= alone.
+
+Exit codes:
+    0  success
+    1  search only: no matches
+    2  replace / structured-patch: the old text was not found; file unchanged
+    3  replace / structured-patch: --expect-count did not match; file unchanged
+    4  a .py file was written but no longer compiles; meta has error=py_syntax
+       and backup=PATH.ludvart.bak (the pre-edit contents)
+    5  structured-patch: the payload is not valid JSON
+    6  structured-patch: the edits list is missing or malformed
+
+Any write first copies the target to PATH.ludvart.bak, and a written .py file is
+compile-checked (meta pycheck=ok or pycheck=FAILED).
+
+Subcommands
+-----------
+read PATH [--start N] [--end M]
+    Payload is the file, or the 1-indexed inclusive line range N..M.
+    Meta: path=, lines=<total in file>, range=<A-B or all>.
+    ~/.ludvart/bin/ludvart_helper read src/app.py --start 40 --end 80
+
+write PATH --b64 DATA [--dry-run]
+    Overwrite PATH with the decoded DATA, creating parent directories.
+    Meta: path=, bytes=. With --dry-run nothing is written and the payload is
+    a unified diff of the change instead.
+    ~/.ludvart/bin/ludvart_helper write notes.txt --b64 aGVsbG8K
+
+append PATH --b64 DATA
+    Append the decoded DATA to PATH. Meta: path=, bytes=.
+
+replace PATH --old-b64 A --new-b64 B [--count N] [--expect-count K] [--dry-run]
+    Literal (never regex) replacement of A with B. Replaces every occurrence
+    unless --count limits it. --expect-count K refuses to write unless A occurs
+    exactly K times, which is the safe way to edit a single known site.
+    Meta on success: path=, replaced=<n>.
+    ~/.ludvart/bin/ludvart_helper replace src/app.py --old-b64 T0xE --new-b64 TkVX --expect-count 1
+
+replace-range PATH --start N --end M --b64 DATA [--dry-run]
+    Replace lines N..M (1-indexed, inclusive) with the decoded DATA. Use it when
+    the old text is awkward to reproduce exactly. Meta: range=N-M.
+
+structured-patch PATH --b64 JSON [--dry-run]
+    Apply several exact edits in one pass, writing only if all of them apply.
+    The decoded JSON is:
+        {"edits": [{"old_b64": "...", "new_b64": "...", "expect_count": 1}]}
+    expect_count defaults to 1 per edit; set it to null to accept any number.
+    An optional "count" caps how many occurrences that edit replaces. On failure
+    the meta names the failing edit with index=<1-based>.
+    Meta on success: edits=<n>, replaced=<total>.
+
+search PATTERN [--path P] [--glob G]
+    Recursive Python-regex search. P defaults to "." and may be a file or a
+    directory; --glob filters file names, e.g. "*.py". Skips .git, node_modules
+    and __pycache__. Payload is newline-joined "path:lineno:text" hits.
+    exit=0 when there was at least one hit, exit=1 when there was none.
+    Meta: matches=.
+    ~/.ludvart/bin/ludvart_helper search "def main" --path src --glob "*.py"
+
+run --b64 CMD
+    Run the decoded CMD through the shell with its stdout and stderr going
+    straight to the terminal, then print only the END sentinel. exit= is the
+    command's real status (for a pipeline, that of the last command).
+    ~/.ludvart/bin/ludvart_helper run --b64 bWFrZSB0ZXN0
+
+info
+    Payload is "ludvart_helper <version>", caps= and the python version. Use it
+    to check the helper is installed and what it supports.
+
+spec
+    Payload is this reference. Re-read it with
+    ~/.ludvart/bin/ludvart_helper spec
+    if you ever need the interface and it is not already in front of you; every
+    subcommand also accepts -h.\
+"""
 
 def emit(op, payload_bytes=None, code=0, **meta):
     sys.stdout.write("<<<LUDVART:BEGIN op=%s>>>\n" % op)
@@ -192,6 +288,9 @@ def op_info(a):
     txt = "ludvart_helper %s\ncaps=%s\npython=%s" % (VER, CAPS, sys.version.split()[0])
     return emit("info", txt.encode(), 0)
 
+def op_spec(a):
+    return emit("spec", SPEC.encode(), 0, version=VER)
+
 def main():
     p = argparse.ArgumentParser(prog="ludvart_helper")
     # NOTE: the required= keyword for subparsers needs Python 3.7+, so we leave
@@ -208,6 +307,7 @@ def main():
     s = sub.add_parser("search"); s.add_argument("pattern"); s.add_argument("--path", default="."); s.add_argument("--glob"); s.set_defaults(fn=op_search)
     rn = sub.add_parser("run"); rn.add_argument("--b64", required=True); rn.set_defaults(fn=op_run)
     inf = sub.add_parser("info"); inf.set_defaults(fn=op_info)
+    sc = sub.add_parser("spec"); sc.set_defaults(fn=op_spec)
     a = p.parse_args()
     if not getattr(a, "fn", None):
         p.print_help(sys.stderr)

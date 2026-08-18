@@ -6,6 +6,7 @@ exist. Its only previous coverage was through the client's in-process
 directly against the module the backend actually calls.
 """
 
+from ludvart.helper_src import LUDVART_HELPER_SPEC, LUDVART_HELPER_VERSION
 from ludvart.prompt import LUDVART_HELPERS_DOC, SELF_MD_MAX_CHARS, system_prompt
 from ludvart.tools import builtin_tool_specs
 
@@ -76,6 +77,20 @@ def test_helpers_doc_is_ascii_and_documents_the_helper():
     assert "ludvart_helper" in LUDVART_HELPERS_DOC
 
 
+def test_the_helper_interface_comes_from_the_helper_itself():
+    """The prompt must quote the shipped helper's spec, not a hand-kept copy.
+
+    The two drifted before: the prompt still described v0.1.0 and omitted
+    replace-range, structured-patch, --dry-run and --expect-count long after the
+    helper grew them, so the model kept calling an interface that did not exist.
+    """
+    prompt = system_prompt(builtin_tool_specs())
+    assert LUDVART_HELPER_SPEC in prompt
+    assert LUDVART_HELPER_VERSION in LUDVART_HELPERS_DOC
+    # One statement of the interface, not two that can disagree.
+    assert prompt.count("Subcommands") == 1
+
+
 def test_prompt_never_invokes_the_helper_by_a_bare_name():
     """The helper is not on PATH, so every example must spell out its path.
 
@@ -101,6 +116,7 @@ def main() -> None:
     test_prompt_requires_helper_over_raw_injected_shell()
     test_prompt_describes_the_screen_context_and_user_request_blocks()
     test_helpers_doc_is_ascii_and_documents_the_helper()
+    test_the_helper_interface_comes_from_the_helper_itself()
     test_prompt_never_invokes_the_helper_by_a_bare_name()
     test_self_md_limit_is_a_sane_positive_bound()
     print("prompt: OK")

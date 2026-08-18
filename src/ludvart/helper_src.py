@@ -14,6 +14,7 @@ in the remote's own ``python3`` and resolves ``~`` via the remote's ``HOME``.
 
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import os
@@ -33,11 +34,30 @@ def _parse_version(src: bytes) -> str:
     return m.group(1).decode("ascii") if m else "0.0.0"
 
 
+def _parse_spec(src: bytes) -> str:
+    """Pull the helper's own ``SPEC`` text out of the source without running it.
+
+    The helper documents itself so the model's instructions cannot drift from
+    the code they describe; the prompt embeds whatever this returns.
+    """
+    for node in ast.parse(src).body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "SPEC":
+                value = ast.literal_eval(node.value)
+                return value if isinstance(value, str) else ""
+    return ""
+
+
 #: Raw bytes of the golden helper script.
 LUDVART_HELPER_SOURCE: bytes = _load_source()
 
 #: Version string declared inside the helper (its ``VER = "..."`` line).
 LUDVART_HELPER_VERSION: str = _parse_version(LUDVART_HELPER_SOURCE)
+
+#: The helper's self-description, ready to be dropped into the system prompt.
+LUDVART_HELPER_SPEC: str = _parse_spec(LUDVART_HELPER_SOURCE)
 
 #: md5 of the golden source, used to detect a missing/outdated/tampered copy.
 LUDVART_HELPER_MD5: str = hashlib.md5(LUDVART_HELPER_SOURCE).hexdigest()
@@ -46,7 +66,7 @@ LUDVART_HELPER_MD5: str = hashlib.md5(LUDVART_HELPER_SOURCE).hexdigest()
 # source. If ``assets/ludvart_helper`` is ever changed, this constant must be
 # updated to match -- so a silent swap of the asset is caught at import time,
 # and the harness only ever installs a helper whose checksum it vouches for.
-LUDVART_HELPER_MD5_EXPECTED = "d9cdb7fc70f5eea51b7850a3e5301608"
+LUDVART_HELPER_MD5_EXPECTED = "59bfcaec07866cd30e90fd1a1c190f7b"
 
 if LUDVART_HELPER_MD5 != LUDVART_HELPER_MD5_EXPECTED:  # pragma: no cover - guard
     raise RuntimeError(

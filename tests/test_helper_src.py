@@ -9,6 +9,7 @@ Run:
         && python tests/test_helper_src.py
 """
 
+import base64
 import hashlib
 import os
 import re
@@ -20,6 +21,7 @@ from ludvart.helper_src import (
     LUDVART_HELPER_MD5,
     LUDVART_HELPER_MD5_EXPECTED,
     LUDVART_HELPER_SOURCE,
+    LUDVART_HELPER_SPEC,
     LUDVART_HELPER_VERSION,
     helper_install_command,
     helper_install_payload_b64,
@@ -80,6 +82,36 @@ def test_runs_under_old_python_if_available():
     print("runs under %s: OK" % old)
 
 
+def test_spec_is_the_helpers_own_documentation():
+    """The spec must be extractable, complete, and what the helper itself prints.
+
+    It is folded verbatim into the model's system prompt, so a capability the
+    helper grew but never documented would silently go unused -- and an example
+    on a bare name would send the model back to "command not found".
+    """
+    assert LUDVART_HELPER_SPEC.strip(), "SPEC missing from the golden asset"
+    LUDVART_HELPER_SPEC.encode("ascii")
+    assert "~/.ludvart/bin/ludvart_helper" in LUDVART_HELPER_SPEC
+
+    caps = re.search(rb'^CAPS\s*=\s*"([^"]+)"', LUDVART_HELPER_SOURCE, re.MULTILINE)
+    assert caps, "helper no longer declares CAPS"
+    for cap in caps.group(1).decode().split(","):
+        assert re.search(r"^%s\b" % re.escape(cap), LUDVART_HELPER_SPEC, re.M), \
+            "subcommand %r is undocumented in SPEC" % cap
+
+    with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as fh:
+        fh.write(LUDVART_HELPER_SOURCE)
+        script = fh.name
+    try:
+        r = subprocess.run(["python3", script, "spec"], capture_output=True, text=True)
+    finally:
+        os.unlink(script)
+    assert r.returncode == 0, r.stderr
+    payload = base64.b64decode(r.stdout.splitlines()[1]).decode()
+    assert payload == LUDVART_HELPER_SPEC
+    print("spec is extracted, complete, and self-consistent: OK")
+
+
 def test_command_is_quote_safe():
     cmd = helper_install_command()
     # Wrapped in single quotes; the inner program must contain no single quote
@@ -138,6 +170,7 @@ if __name__ == "__main__":
     test_asset_integrity()
     test_source_is_py36_compatible()
     test_runs_under_old_python_if_available()
+    test_spec_is_the_helpers_own_documentation()
     test_command_is_quote_safe()
     test_install_current_and_repair()
     print("all helper_src tests passed")
