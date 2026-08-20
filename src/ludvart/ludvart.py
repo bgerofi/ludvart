@@ -107,6 +107,85 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
         pass
 
 
+class TerminalLiveness:
+    """Notice a terminal that has gone away without ever hanging up.
+
+    A lost terminal normally shows up as EOF on stdin, but sshd can keep the pty
+    open after the network underneath it drops. Nothing then arrives and nothing
+    ever closes, so the client idles forever holding a backend -- and that
+    backend's gateway -- open. After a long silence this asks the terminal to
+    report its cursor position, a question every terminal answers and none of
+    them displays. Only an unanswered probe counts against the session, and
+    several in a row are needed before it is given up on, so a slow link is
+    never mistaken for a dead one.
+
+    Asking only while the human is silent is also what keeps the answer ours: a
+    full-screen app can ask for the cursor position too and its reply travels
+    the same path, but it only asks in response to input we have just seen.
+    """
+
+    #: Device Status Report -- "where is the cursor?".
+    QUERY = b"\x1b[6n"
+
+    #: The terminal's answer, ``ESC[<row>;<col>R``.
+    _REPLY = re.compile(rb"\x1b\[\d+;\d+R")
+
+    def __init__(
+        self,
+        idle: float,
+        reply_wait: float,
+        max_misses: int,
+        clock=time.monotonic,  # noqa: ANN001 - injected for tests
+    ) -> None:
+        self.idle = idle
+        self.reply_wait = reply_wait
+        self.max_misses = max_misses
+        self._clock = clock
+        self._quiet_since = clock()
+        self._probed_at: float | None = None
+        self._misses = 0
+
+    def touch(self) -> None:
+        """Record a sign of life from the far side of the terminal."""
+        self._quiet_since = self._clock()
+        self._probed_at = None
+        self._misses = 0
+
+    def answered(self, data: bytes) -> bytes:
+        """Record ``data`` as life and take this probe's answer out of it.
+
+        The answer replies to a question the human never asked, so it must not
+        reach the child; anything typed alongside it is passed on untouched.
+        """
+        probed = self._probed_at is not None
+        self.touch()
+        if probed:
+            data = self._REPLY.sub(b"", data, count=1)
+        return data
+
+    def timeout(self) -> float:
+        """Seconds to wait for input before the next liveness decision."""
+        now = self._clock()
+        if self._probed_at is not None:
+            return max(0.0, self._probed_at + self.reply_wait - now)
+        return max(0.0, self._quiet_since + self.idle - now)
+
+    def check(self) -> str:
+        """Return what the relay should do now: ``""``, ``probe`` or ``dead``."""
+        now = self._clock()
+        if self._probed_at is not None:
+            if now - self._probed_at < self.reply_wait:
+                return ""
+            self._misses += 1
+            self._probed_at = None
+            if self._misses >= self.max_misses:
+                return "dead"
+        elif now - self._quiet_since < self.idle:
+            return ""
+        self._probed_at = now
+        return "probe"
+
+
 class _AskCancelled(Exception):
     """Raised inside the agent loop to unwind a user-cancelled LLM request."""
 
@@ -231,6 +310,17 @@ class Ludvart:
 
     #: Cap (seconds) on waiting for the helper install to report its result.
     HELPER_INIT_MAX_WAIT = 90.0
+
+    #: Terminal liveness (see :class:`TerminalLiveness`). After LIVENESS_IDLE
+    #: seconds without a keystroke the terminal is asked whether it is still
+    #: there; a live one answers well within LIVENESS_REPLY_WAIT, and only
+    #: LIVENESS_MAX_MISSES unanswered probes in a row end the session.
+    LIVENESS_IDLE = 300.0
+    LIVENESS_REPLY_WAIT = 10.0
+    LIVENESS_MAX_MISSES = 3
+
+    #: How long the child is given to act on the hangup before it is killed.
+    HANGUP_GRACE = 5.0
 
     #: The install result line. ``status`` is constrained to real words so the
     #: echoed command template (which contains ``status=%s``) is never mistaken
@@ -517,19 +607,27 @@ class Ludvart:
         """Shuttle bytes between stdin and the PTY master until EOF/child exit."""
         master = self._master_fd
         stdin = self._stdin_fd
+        liveness = TerminalLiveness(
+            self.LIVENESS_IDLE, self.LIVENESS_REPLY_WAIT, self.LIVENESS_MAX_MISSES
+        )
 
         # Nothing can be asked of a backend with an empty registry, so collect a
         # model right away rather than waiting for the user to find the summon
         # key. Closing the panel drops straight into the normal relay.
         if self._backend_needs_setup:
             self._open_panel()
+            liveness.touch()
 
+        # Set when the terminal, not the child, is what ended the session.
+        lost = False
         while True:
             if self._resized:
                 self._handle_resize()
 
             try:
-                readable, _, _ = select.select([master, stdin], [], [])
+                readable, _, _ = select.select(
+                    [master, stdin], [], [], liveness.timeout()
+                )
             except InterruptedError:
                 # Interrupted by SIGWINCH (or similar); loop to handle it.
                 continue
@@ -545,10 +643,57 @@ class Ludvart:
 
             if stdin in readable:
                 data = self._read(stdin)
+                if data is None:  # the terminal hung up -> the human is gone
+                    lost = True
+                    break
                 if data:
-                    self._handle_input(data)
+                    data = liveness.answered(data)
+                    if data:
+                        self._handle_input(data)
+                        # The panel runs its own loop, so this returns long
+                        # after the keystroke that opened it.
+                        liveness.touch()
 
+            verdict = liveness.check()
+            if verdict == "dead":
+                lost = True
+                break
+            if verdict == "probe":
+                try:
+                    self._write_all(self._stdout_fd, TerminalLiveness.QUERY)
+                except OSError:
+                    # Nowhere left to write: the terminal is already gone.
+                    lost = True
+                    break
+
+        if lost:
+            self._hang_up_child()
         return self._reap_child()
+
+    def _hang_up_child(self) -> None:
+        """Hang the child up once the terminal it was talking to is gone.
+
+        The child holds its own session with the PTY as its controlling
+        terminal, so nothing has told it the human left. Without this,
+        :meth:`_reap_child` would wait forever on a shell that is itself waiting
+        for input which can never arrive.
+        """
+        try:
+            pgid = os.getpgid(self._child_pid)
+        except OSError:
+            return
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGHUP)
+        deadline = time.monotonic() + self.HANGUP_GRACE
+        while time.monotonic() < deadline:
+            try:
+                if os.waitpid(self._child_pid, os.WNOHANG)[0]:
+                    return
+            except OSError:
+                return
+            time.sleep(self.SETTLE_POLL)
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)
 
     # -- input handling / prefix commands -----------------------------------
 
