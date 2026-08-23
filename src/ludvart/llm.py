@@ -327,11 +327,32 @@ def _http_status(exc: BaseException) -> int | None:
     return None
 
 
+def _is_transport_error(exc: BaseException) -> bool:
+    """True for a raw ``httpx`` timeout or dropped connection.
+
+    The SDKs translate these into their own ``APITimeoutError`` /
+    ``APIConnectionError`` -- but only around the request itself. A streamed
+    response is iterated *outside* that wrapper, so a stall while waiting for
+    the next chunk surfaces as the bare ``httpx`` exception, which matches none
+    of the names above and used to end the turn instead of being retried.
+    """
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx ships with the SDKs
+        return False
+    return isinstance(
+        exc,
+        (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError),
+    )
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """True if ``exc`` looks like a transient failure worth retrying."""
     if isinstance(exc, StreamAssemblyError):
         return True
     if type(exc).__name__ in _RETRYABLE_TYPES:
+        return True
+    if _is_transport_error(exc):
         return True
     status = _http_status(exc)
     return isinstance(status, int) and status in _RETRYABLE_STATUS

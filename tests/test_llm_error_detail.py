@@ -380,12 +380,62 @@ def test_google_rate_limit_recognized_with_retry_info():
     assert _retry_after_seconds(bad) is None
 
 
+def test_a_bare_httpx_timeout_is_retryable():
+    """The reported failure: "custom request failed after 121.8s: httpx.ReadTimeout".
+
+    The SDKs turn a timeout into their own APITimeoutError, but only around the
+    request itself; a streamed response is iterated outside that wrapper, so a
+    stall waiting for the first chunk arrives as the bare httpx error. It
+    matched none of the retryable names, so a turn that worked on a manual
+    resend was reported to the user as a hard failure.
+    """
+    import httpx
+
+    assert _is_retryable(httpx.ReadTimeout("timed out"))
+    assert _is_retryable(httpx.ConnectTimeout("timed out"))
+    assert _is_retryable(httpx.ConnectError("connection refused"))
+    assert _is_retryable(httpx.RemoteProtocolError("server disconnected"))
+    # A request we malformed ourselves will fail the same way every time.
+    assert not _is_retryable(httpx.LocalProtocolError("bad header"))
+    assert not _is_retryable(httpx.UnsupportedProtocol("no scheme"))
+
+
+def test_a_stalled_stream_is_retried_rather_than_reported(monkeypatch):
+    import httpx
+
+    class _StreamingClient(LLMClient):
+        def _stream_turn(self, request, on_text):
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadTimeout("timed out")
+            on_text("done")
+            return Turn(
+                text="done",
+                assistant_message={"role": "assistant", "content": "done"},
+            )
+
+    import ludvart.llm as llm
+
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+    client = _StreamingClient(_client().config, max_retries=2)
+    client.calls = 0
+    notes = []
+    client.on_retry = notes.append
+
+    turn = client.converse([{"role": "user", "content": "hello"}], on_text=lambda _t: None)
+
+    assert client.calls == 2
+    assert turn.text == "done"
+    assert notes and "ReadTimeout" in notes[0]
+
+
 def main():
     test_root_cause_walks_chain()
     test_describe_includes_timing_and_type()
     test_describe_qualifies_module_and_status_and_request_id()
     test_describe_surfaces_underlying_cause()
     test_is_retryable()
+    test_a_bare_httpx_timeout_is_retryable()
     test_is_rate_limit()
     test_retry_after_numeric_and_attribute_and_none()
     test_retry_after_http_date()
