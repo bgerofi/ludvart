@@ -10,6 +10,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from e2e_util import isolate_sessions
+
 from ludvart.session import (
     SessionStore,
     complete_slash,
@@ -23,6 +25,9 @@ from ludvart.session import (
     sanitize_history,
     sessions_root,
 )
+
+# Running this file directly skips conftest, so isolate here too.
+isolate_sessions()
 
 
 def test_path_layout_utc():
@@ -174,6 +179,22 @@ def test_sessions_root_env_override(monkeypatch=None):
         else:
             os.environ["LUDVART_SESSIONS_DIR"] = old
     print("sessions_root env override: OK")
+
+
+def test_a_test_run_never_writes_to_the_real_session_store():
+    """Test runs used to save into ~/.ludvart/sessions like any real run.
+
+    The e2e scripts fork a real ludvart, which persists its conversation, so a
+    single suite run dropped dozens of throwaway sessions into the developer's
+    store and /sessions listed them next to actual work.
+    """
+    import os
+
+    root = sessions_root().resolve()
+    real = Path(os.path.expanduser("~/.ludvart/sessions")).resolve()
+    assert root != real
+    assert real not in root.parents
+    print("test sessions are isolated: OK")
 
 
 def test_save_records_provider():
@@ -598,6 +619,7 @@ if __name__ == "__main__":
     test_open_existing_binds_to_same_file()
     test_create_new_avoids_directory_collision()
     test_sessions_root_env_override()
+    test_a_test_run_never_writes_to_the_real_session_store()
     test_save_records_provider()
     test_provider_family_mapping()
     test_sanitize_history_same_family_unchanged()

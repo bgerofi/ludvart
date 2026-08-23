@@ -15,10 +15,32 @@ raises -- printing ``[FAIL]`` and returning is reported as a pass.
 """
 
 import os
+import tempfile
 
 E2E_BACKEND_ENV = "LUDVART_E2E_BACKEND"
 
 DEFAULT_COMMAND = ["bash", "--norc", "-i"]
+
+#: Where a test run keeps the conversations it creates. An e2e script forks a
+#: real ludvart, which saves its conversation like any other run does, so
+#: without this they land in ~/.ludvart/sessions and /sessions lists them
+#: alongside the developer's actual work.
+TEST_SESSIONS_DIR = os.path.join(tempfile.gettempdir(), "ludvart-test-sessions")
+
+
+def isolate_sessions() -> str:
+    """Point session storage at the throwaway root and return it.
+
+    Exported rather than merely set, so the backend (and the ludvart the e2e
+    scripts fork) inherits it. An explicit ``LUDVART_SESSIONS_DIR`` wins, which
+    is what lets an individual test redirect at its own temp directory.
+    """
+    root = os.environ.setdefault("LUDVART_SESSIONS_DIR", TEST_SESSIONS_DIR)
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+isolate_sessions()
 
 
 def e2e_backend() -> str:

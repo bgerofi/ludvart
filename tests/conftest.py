@@ -30,6 +30,12 @@ from pathlib import Path
 
 import pytest
 
+from e2e_util import isolate_sessions
+
+# Applies to every test, not just the e2e ones: whatever a test saves must not
+# end up in the developer's real ~/.ludvart/sessions.
+isolate_sessions()
+
 
 #: Model the e2e suite asks for by default. These tests exercise ludvart's own
 #: plumbing (tool calls, injection, settling), not the model's intelligence, so
