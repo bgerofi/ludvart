@@ -58,7 +58,10 @@ def builtin_tool_specs() -> list[ToolSpec]:
                 "wastes a call; split long content into several sequential "
                 "inject_input calls of <=2 KB each (submit=false on the "
                 "intermediate parts, then submit=true -- or a trailing "
-                "newline -- on the final one to execute)."
+                "newline -- on the final one to execute). To put a large file "
+                "on the machine, do not split a command line at all: use "
+                "ludvart_helper write for the first chunk and append for each "
+                "of the rest."
             ),
             input_schema={
                 "type": "object",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
 
-VER = "0.4.1"
+VER = "0.4.2"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -49,6 +49,14 @@ Exit codes:
 Any write first copies the target to PATH.ludvart.bak, and a written .py file is
 compile-checked (meta pycheck=ok or pycheck=FAILED).
 
+Size limit: the helper is reached by typing a command line into the terminal,
+and that channel carries only about 2 KB per call -- a longer one is liable to
+arrive empty or cut short, which the shell will then run as something other than
+what was meant. So no single call may carry more than ~2 KB of base64. Content
+bigger than that is built up instead: one write with the first chunk, then an
+append per remaining chunk. To change part of a large file, use replace,
+replace-range or structured-patch rather than rewriting the whole of it.
+
 Subcommands
 -----------
 read PATH [--start N] [--end M]
@@ -60,10 +68,13 @@ write PATH --b64 DATA [--dry-run]
     Overwrite PATH with the decoded DATA, creating parent directories.
     Meta: path=, bytes=. With --dry-run nothing is written and the payload is
     a unified diff of the change instead.
+    Keep DATA under ~2 KB; for more, write the first chunk and append the rest.
     ~/.ludvart/bin/ludvart_helper write notes.txt --b64 aGVsbG8K
 
 append PATH --b64 DATA
-    Append the decoded DATA to PATH. Meta: path=, bytes=.
+    Append the decoded DATA to PATH, creating it if absent. Meta: path=, bytes=.
+    This is how a file larger than one call is written: repeat it per chunk, and
+    check bytes= against what was sent so a short chunk is caught at once.
 
 replace PATH --old-b64 A --new-b64 B [--count N] [--expect-count K] [--dry-run]
     Literal (never regex) replacement of A with B. Replaces every occurrence

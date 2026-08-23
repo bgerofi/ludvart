@@ -119,6 +119,22 @@ def test_the_prompt_says_a_run_reports_its_real_exit_code():
     assert "exit=" in run_section
 
 
+def test_the_prompt_says_how_to_get_more_than_one_call_across():
+    """The 2 KB cap was stated for inject_input but not for the helper.
+
+    The helper is reached by typing a command line, so the cap applies to its
+    base64 arguments too -- but the spec never said so, and never named
+    write-then-append as the way past it. The model filled the gap by calling a
+    documented limit a discipline problem of its own.
+    """
+    prompt = system_prompt(builtin_tool_specs())
+    assert "Size limit:" in LUDVART_HELPER_SPEC
+    assert "2 KB" in LUDVART_HELPER_SPEC
+    write_section = prompt.split("\nwrite PATH --b64 DATA", 1)[1]
+    write_section = write_section.split("\nreplace PATH", 1)[0]
+    assert "append" in write_section, "nothing points from a big write to append"
+
+
 def test_self_md_limit_is_a_sane_positive_bound():
     assert isinstance(SELF_MD_MAX_CHARS, int)
     assert SELF_MD_MAX_CHARS > 0
@@ -133,6 +149,7 @@ def main() -> None:
     test_the_helper_interface_comes_from_the_helper_itself()
     test_prompt_never_invokes_the_helper_by_a_bare_name()
     test_the_prompt_says_a_run_reports_its_real_exit_code()
+    test_the_prompt_says_how_to_get_more_than_one_call_across()
     test_self_md_limit_is_a_sane_positive_bound()
     print("prompt: OK")
 
