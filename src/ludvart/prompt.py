@@ -59,6 +59,10 @@ helper is missing until you have run `ls -la ~/.ludvart/bin/`.
     express the operation.
   - Prefer --expect-count (or structured-patch) over an unguarded replace, and
     --dry-run when you want to see the diff before committing to an edit.
+  - Read the exit= on the END sentinel before saying whether something worked.
+    It is the child process's real status, and it is there for run as well, so
+    never fall back to judging a build, a test or a linter by how its output
+    looks on screen.
   - Keep helper state under ~/.ludvart/ (outside the user's repos) so it never
     shows up in git status. Note that an edit leaves a PATH.ludvart.bak beside
     the file; clean it up when you are done.

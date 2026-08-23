@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
 
-VER = "0.4.0"
+VER = "0.4.1"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -19,12 +19,18 @@ Why to prefer it over typing shell commands: content is passed as base64, so
 quoting, newlines, backslashes and escapes cannot corrupt it, and every result
 carries an explicit exit code instead of having to be guessed from screen text.
 
-Result framing (every subcommand except run):
+Result framing:
     <<<LUDVART:BEGIN op=NAME>>>
     <one line of base64; present only when the op returns data>
     <<<LUDVART:END op=NAME exit=CODE key=value ...>>>
 Base64-decode the line between BEGIN and END to get the payload. Decide success
 or failure from exit= alone.
+
+Every subcommand ends with that END sentinel, run included -- run is only the
+exception to the BEGIN half, because its command writes straight to the terminal
+instead of returning a payload. So the real exit status of anything the helper
+runs is always there on screen: read exit= rather than judging the outcome from
+what the output looks like.
 
 Exit codes:
     0  success
@@ -89,8 +95,11 @@ search PATTERN [--path P] [--glob G]
 
 run --b64 CMD
     Run the decoded CMD through the shell with its stdout and stderr going
-    straight to the terminal, then print only the END sentinel. exit= is the
-    command's real status (for a pipeline, that of the last command).
+    straight to the terminal, then print only the END sentinel. exit= on that
+    sentinel is the command's real status, propagated from the child process
+    (for a pipeline, that of the last command). It is the answer to "did this
+    work?" -- a compiler, a test run or a linter that printed nothing alarming
+    still failed if exit= is non-zero.
     ~/.ludvart/bin/ludvart_helper run --b64 bWFrZSB0ZXN0
 
 info

@@ -105,6 +105,20 @@ def test_prompt_never_invokes_the_helper_by_a_bare_name():
             assert bad not in line, f"bare helper invocation: {line!r}"
 
 
+def test_the_prompt_says_a_run_reports_its_real_exit_code():
+    """The model believed it had to guess whether an injected command worked.
+
+    The spec did give run an exit code, but the framing section opened with
+    "every subcommand except run", which reads as "run is unframed" -- so the
+    model stopped looking and fell back on judging output by eye.
+    """
+    prompt = system_prompt(builtin_tool_specs())
+    assert "except run" not in prompt
+    assert "run included" in prompt
+    run_section = prompt.split("\nrun --b64 CMD\n", 1)[1].split("\ninfo\n", 1)[0]
+    assert "exit=" in run_section
+
+
 def test_self_md_limit_is_a_sane_positive_bound():
     assert isinstance(SELF_MD_MAX_CHARS, int)
     assert SELF_MD_MAX_CHARS > 0
@@ -118,6 +132,7 @@ def main() -> None:
     test_helpers_doc_is_ascii_and_documents_the_helper()
     test_the_helper_interface_comes_from_the_helper_itself()
     test_prompt_never_invokes_the_helper_by_a_bare_name()
+    test_the_prompt_says_a_run_reports_its_real_exit_code()
     test_self_md_limit_is_a_sane_positive_bound()
     print("prompt: OK")
 
