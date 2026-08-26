@@ -354,7 +354,7 @@ def _do_model_add(reg, manager, core, channel: FrameChannel, emit) -> None:
 
     ok, msg = manager.add(reg, status=status)
     emit(msg)
-    if ok and manager.active_index() is None:
+    if ok and manager.client is None:
         # First model on a fresh backend: adding it is also what puts the
         # backend into service, so activate it instead of leaving it idle.
         _do_model_use(str(len(manager.models)), manager, core, channel, emit)

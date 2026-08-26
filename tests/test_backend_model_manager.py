@@ -118,6 +118,23 @@ def test_add_rejects_unverifiable():
     print("add rejects unverifiable: OK")
 
 
+def test_use_builds_a_client_when_the_active_model_has_none():
+    """A fresh registry marks its first entry active before anything is built.
+
+    ``use`` used to read that flag alone and answer "Already using ...", so the
+    backend kept its empty client and refused every turn as unregistered.
+    """
+    _install_fakes()
+    os.environ["LUDVART_MODELS_FILE"] = os.path.join(tempfile.mkdtemp(), "m.json")
+    m = backend.ModelManager([_reg(model="a", active=True)], [True], None, None)
+
+    ok, msg = m.use(0)
+
+    assert ok, msg
+    assert m.client is not None, "the active model was never built"
+    print("use builds a client for an active-but-unbuilt model: OK")
+
+
 def test_a_failed_switch_stops_the_gateway_it_started():
     """The gateway is already up by the time verification fails.
 
@@ -162,6 +179,7 @@ def main():
     test_use_unavailable_verifies_and_may_fail()
     test_add_appends_verified_without_switching()
     test_add_rejects_unverifiable()
+    test_use_builds_a_client_when_the_active_model_has_none()
     test_a_failed_switch_stops_the_gateway_it_started()
     test_remove_forbids_active()
     print("\nALL ModelManager tests passed.")

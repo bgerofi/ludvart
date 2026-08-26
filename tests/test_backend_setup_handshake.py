@@ -128,12 +128,61 @@ def test_guided_registration_starts_once_and_explains_why():
     print("registration starts once, with an explanation: OK")
 
 
+def test_the_first_registration_puts_the_backend_into_service(tmp_path: Path):
+    """Registering the first model must also build it, not just record it.
+
+    The registry marks its first entry active as it is written, so a "is
+    anything active?" test saw a model that had never been built: the backend
+    kept ``core.llm`` empty and refused every turn as unregistered.
+    """
+    from ludvart import backend as backend_mod, server
+
+    class _Client:
+        name, model, context_window = "openai", "m", 1000
+
+    saved = (backend_mod.build_backend, backend_mod.verify_backend)
+    backend_mod.build_backend = lambda reg, *, status=None: backend_mod.Backend(_Client())
+    backend_mod.verify_backend = lambda b: None
+    os.environ["LUDVART_MODELS_FILE"] = str(tmp_path / "models.json")
+
+    class _Core:
+        llm = None
+        history: list = []
+        last_input_tokens = 0
+        CONTEXT_COMPACT_PCT = 80.0
+
+    class _Channel:
+        def send(self, msg):
+            pass
+
+    manager = backend_mod.ModelManager([], [], None, None)
+    core = _Core()
+    out: list[str] = []
+    reg = {
+        "provider": "openai",
+        "api_url": "http://x",
+        "api_key": "k",
+        "model": "m",
+        "context_window": 0,
+        "active": False,
+    }
+    try:
+        server._do_model_add(reg, manager, core, _Channel(), out.append)
+    finally:
+        backend_mod.build_backend, backend_mod.verify_backend = saved
+
+    assert core.llm is not None, f"the registered model was never activated: {out}"
+    assert manager.client is core.llm
+    print("the first registration puts the backend into service: OK")
+
+
 def main():
     import tempfile
 
     for fn in (
         test_hello_requests_setup_when_no_model_is_registered,
         test_a_turn_is_refused_until_a_model_is_registered,
+        test_the_first_registration_puts_the_backend_into_service,
     ):
         with tempfile.TemporaryDirectory() as d:
             fn(Path(d))

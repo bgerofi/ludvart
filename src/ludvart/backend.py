@@ -163,7 +163,7 @@ class ModelManager:
         self,
         models: list[Registration],
         available: list[bool],
-        client: LLMClient,
+        client: LLMClient | None,
         gateway: "CopilotGateway | None" = None,
     ) -> None:
         self.models = models
@@ -211,7 +211,9 @@ class ModelManager:
         before it is torn down.
         """
         reg = self.models[index]
-        if reg.get("active"):
+        # A fresh registry marks its first entry active before any client is
+        # built, so "active" alone does not mean the backend is in service.
+        if reg.get("active") and self.client is not None:
             return True, f"Already using {label(reg)}."
         backend: Backend | None = None
         try:
