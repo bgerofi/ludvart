@@ -72,6 +72,20 @@ def test_prompt_describes_the_screen_context_and_user_request_blocks():
     assert "<userRequest>" in prompt
 
 
+def test_an_out_of_date_helper_does_not_call_off_the_task():
+    """"Tell the user to run /init_helpers" read as "and stop there".
+
+    A host whose helper was one version behind turned "create a file with touch"
+    into a turn that ran the detection command, reported the mismatch and did
+    nothing else. Detection is meant to pick a means, never to become the
+    errand.
+    """
+    prompt = system_prompt(builtin_tool_specs())
+    section = prompt.split("### Detecting it", 1)[1].split("###", 1)[0]
+    assert "go on and finish what the user asked for" in section, section
+    assert "never a reason to stop a task" in section, section
+
+
 def test_helpers_doc_is_ascii_and_documents_the_helper():
     LUDVART_HELPERS_DOC.encode("ascii")  # raises if a stray unicode dash returns
     assert "ludvart_helper" in LUDVART_HELPERS_DOC

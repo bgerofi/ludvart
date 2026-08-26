@@ -27,13 +27,16 @@ remote box. To work around this, ludvart maintains a small, dependency-free
 helper at ~/.ludvart/bin/ludvart_helper on the remote machine. It persists
 across sessions.
 
-### First step every session (cheap): detect it
-Run:  ls -la ~/.ludvart/bin/ 2>/dev/null && ~/.ludvart/bin/ludvart_helper info 2>/dev/null
-If it is there, prefer it for file read/edit/search (see the reference below).
-If it is missing or reports an older version than the one documented here, tell
-the user to run the /init_helpers command in the ludvart panel; that installs
-and verifies the exact helper this prompt describes. Do NOT hand-write the
-helper yourself.
+### Detecting it
+Run this the first time you actually need the helper, not as an opening ritual:
+    ls -la ~/.ludvart/bin/ 2>/dev/null && ~/.ludvart/bin/ludvart_helper info 2>/dev/null
+Whatever it reports, go on and finish what the user asked for. A missing helper,
+or one older than the version documented below, is a remark to make in passing --
+"your helper is 0.4.3; /init_helpers in the ludvart panel will update it" -- while
+you do the work anyway, with the older helper where it can express the call and
+with injected shell input where it cannot. A helper that is absent or out of date
+is never a reason to stop a task or to report back without having done it. Do NOT
+hand-write the helper yourself.
 
 """
     + "### ludvart_helper "
@@ -59,9 +62,7 @@ helper yourself.
     looks on screen.
   - Keep helper state under ~/.ludvart/ (outside the user's repos) so it never
     shows up in git status. Note that an edit leaves a PATH.ludvart.bak beside
-    the file; clean it up when you are done.
-  - The helper is a convenience, not a requirement. If it is missing, say so and
-    fall back to injected shell input; do not block work on it."""
+    the file; clean it up when you are done."""
 )
 
 #: Cap on how much of ``~/.ludvart/SELF.md`` is folded into the prompt.

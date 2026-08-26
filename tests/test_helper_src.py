@@ -241,6 +241,131 @@ def test_search_survives_its_arguments_arriving_backwards():
     print("search accepts its arguments in either order: OK")
 
 
+def test_every_subcommand_takes_its_path_the_same_two_ways():
+    """--path worked on search alone, so callers used it everywhere and lost.
+
+    A convention that holds for one subcommand out of seven is not a convention,
+    it is a trap: "replace --path FILE ..." reads as obviously correct and was
+    rejected outright. Accepting both spellings on all of them means there is no
+    longer a choice to get wrong.
+    """
+    payload = base64.b64encode(b"x").decode()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "f.txt")
+        cases = [
+            ["read"],
+            ["write", "--b64", payload],
+            ["append", "--b64", payload],
+            ["replace", "--old-b64", payload, "--new-b64", payload],
+            ["replace-range", "--start", "1", "--end", "1", "--b64", payload],
+            ["structured-patch", "--b64", base64.b64encode(
+                b'{"edits":[{"old_b64":"eA==","new_b64":"eA==",'
+                b'"expect_count":null}]}').decode()],
+        ]
+        for case in cases:
+            with open(target, "w") as fh:
+                fh.write("x\n")
+            positional = run_helper(case[0], target, *case[1:])
+            with open(target, "w") as fh:
+                fh.write("x\n")
+            flagged = run_helper(case[0], "--path", target, *case[1:])
+            assert flagged.stdout == positional.stdout, (case, flagged.stdout)
+            assert flagged.returncode == 0, (case, flagged.stdout)
+
+        # Giving it both ways at once is the one thing that cannot be resolved.
+        clash = run_helper("read", target, "--path", os.path.join(tmp, "other"))
+        assert clash.returncode == 7 and "twice" in clash.stdout, clash.stdout
+        none = run_helper("read")
+        assert none.returncode == 7, none.stdout
+        assert "a path is required" in none.stdout, none.stdout
+    print("every subcommand takes --path as well as the positional: OK")
+
+
+def test_a_near_miss_option_name_is_understood_not_refused():
+    """--start-line means --start and nothing else; refusing it buys nothing.
+
+    Each refusal costs a whole round-trip to say something the call already made
+    unambiguous. Only names whose value means exactly the same thing are folded,
+    so no alias can change how a value is interpreted.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "f.txt")
+        with open(target, "w") as fh:
+            fh.write("aaa\nbbb\nccc\n")
+
+        canonical = run_helper("read", target, "--start", "2", "--end", "3")
+        assert canonical.returncode == 0, canonical.stdout
+        for spelling in (
+            ["read", target, "--start-line", "2", "--end-line", "3"],
+            ["read", target, "--start_line", "2", "--end_line", "3"],
+            ["read", "--file", target, "--begin", "2", "--stop", "3"],
+            ["read", "--path", target, "--START", "2", "--end", "3"],
+        ):
+            r = run_helper(*spelling)
+            assert r.stdout == canonical.stdout, (spelling, r.stdout)
+
+        hits = run_helper("search", "--regex", "bbb", "--in", target)
+        assert hits.returncode == 0 and "matches=1" in hits.stdout, hits.stdout
+
+        # An alias table is not a spell-checker: a real unknown still fails.
+        unknown = run_helper("read", target, "--lines", "2")
+        assert unknown.returncode == 7, unknown.stdout
+    print("near-miss option names are understood: OK")
+
+
+def test_a_b64_option_refuses_anything_that_is_not_base64():
+    """b64decode drops non-alphabet characters, so plain text decoded to junk.
+
+    That junk was then written to the file, or searched for and not found -- a
+    silent corruption where an error was wanted. The one forgiveness is padding,
+    which is a clerical detail rather than evidence the value was never base64.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "f.txt")
+        with open(target, "w") as fh:
+            fh.write("hello\n")
+
+        bad = run_helper("write", target, "--b64", "this is not base64!")
+        assert bad.returncode == 7, bad.stdout
+        assert "not base64" in bad.stdout and "b64_encode" in bad.stdout, bad.stdout
+        with open(target) as fh:
+            assert fh.read() == "hello\n", "a refused call still wrote the file"
+
+        # The dangerous shape: prose whose alphabet characters happen to number
+        # a multiple of four, which the lenient decoder turns into bytes.
+        assert len("".join(c for c in "a b c d" if c.isalnum())) % 4 == 0
+        prose = run_helper("write", target, "--b64", "a b c d")
+        assert prose.returncode == 7, prose.stdout
+        assert "not base64" in prose.stdout, prose.stdout
+        with open(target) as fh:
+            assert fh.read() == "hello\n", "plain text was decoded and written"
+
+        # Padding is the one clerical detail worth forgiving.
+        unpadded = base64.b64encode(b"by").decode()
+        assert unpadded.endswith("="), unpadded
+        ok = run_helper("write", target, "--b64", unpadded.rstrip("="))
+        assert ok.returncode == 0, ok.stdout
+        with open(target) as fh:
+            assert fh.read() == "by"
+    print("a -b64 option refuses plain text: OK")
+
+
+def test_a_missing_file_still_answers_with_a_frame():
+    """A traceback carries no END sentinel, so exit= never arrives.
+
+    The caller is told to decide success from exit= alone; an unframed traceback
+    leaves it waiting for a line that is never printed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        r = run_helper("read", os.path.join(tmp, "nosuch.txt"))
+        assert r.returncode == 8, r.stdout
+        last = r.stdout.splitlines()[-1]
+        assert last.startswith("<<<LUDVART:END op=read exit=8"), r.stdout
+        assert "error=io" in last, last
+        assert "Traceback" not in r.stdout, r.stdout
+    print("a missing file answers with a frame: OK")
+
+
 def test_the_spec_names_the_one_subcommand_that_breaks_the_pattern():
     """Six subcommands demonstrate "path first" and one contradicts it.
 
@@ -364,6 +489,10 @@ if __name__ == "__main__":
     test_the_correction_is_readable_where_it_lands()
     test_an_unknown_subcommand_does_not_spill_the_whole_spec()
     test_search_takes_its_pattern_the_way_grep_would()
+    test_every_subcommand_takes_its_path_the_same_two_ways()
+    test_a_near_miss_option_name_is_understood_not_refused()
+    test_a_b64_option_refuses_anything_that_is_not_base64()
+    test_a_missing_file_still_answers_with_a_frame()
     test_search_survives_its_arguments_arriving_backwards()
     test_the_spec_names_the_one_subcommand_that_breaks_the_pattern()
     test_command_is_quote_safe()
