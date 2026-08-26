@@ -21,6 +21,10 @@ _BOLD = b"\x1b[1m"
 
 _PROMPT = "ludvart> "
 
+#: Most rows the input block may take before it scrolls internally. The panel is
+#: shared with the transcript, so a long paste must not squeeze it out entirely.
+INPUT_MAX_ROWS = 8
+
 # Animated ellipsis frames: dots grow then shrink after the "thinking" text.
 _THINK_FRAMES = ("", ".", "..", "...", "..", ".")
 
@@ -166,7 +170,59 @@ class AiPanel:
             return min(self.cols, len(self.confirm_prompt) + 1)
         if self.steer_prompt:
             return self._input_view(prompt=self.steer_prompt, badge=False)[1]
-        return self._input_view()[1]
+        if self.masked:
+            return self._input_view()[1]
+        return self._input_block()[2]
+
+    def cursor_rowcol(self) -> tuple[int, int]:
+        """The cursor as a (row within the panel, 1-based column) pair.
+
+        The input block is the last thing the panel draws, so its rows sit at
+        the bottom whatever height the panel currently has.
+        """
+        rows = 1
+        if not (self.confirm_prompt or self.steer_prompt or self.masked):
+            rows = len(self._input_block()[0])
+        rows = max(1, min(rows, self.height - 1))
+        row = self.height - rows
+        if not (self.confirm_prompt or self.steer_prompt or self.masked):
+            row += min(self._input_block()[1], rows - 1)
+        return row, self.cursor_col()
+
+    def _input_block(self) -> tuple[list[str], int, int]:
+        """Wrap the input into rows, with the cursor's row index and column.
+
+        A long logical line wraps rather than scrolling sideways: with several
+        lines in the buffer there is no single row to scroll, and seeing the
+        whole of what you pasted is the point of accepting a paste at all.
+        """
+        prefix_w = len(self._prompt_prefix())
+        indent = prefix_w + len(_PROMPT)
+        avail = max(1, self.cols - indent)
+        cur_line, cur_col = self.editor.cursor_line_col()
+        rows: list[str] = []
+        cursor_row = 0
+        cursor_x = 0
+        for i, line in enumerate(self.editor.lines):
+            segs = [line[j:j + avail] for j in range(0, len(line), avail)]
+            if not segs:
+                segs = [""]
+            elif i == cur_line and cur_col == len(line) and cur_col % avail == 0:
+                # The cursor sits just past a segment that filled the width, so
+                # it belongs at the start of the next row rather than on top of
+                # the last character of this one.
+                segs.append("")
+            if i == cur_line:
+                seg = min(cur_col // avail, len(segs) - 1)
+                cursor_row = len(rows) + seg
+                cursor_x = cur_col - seg * avail
+            rows += segs
+        limit = max(1, min(INPUT_MAX_ROWS, self.height - 2))
+        if len(rows) > limit:
+            top = min(max(0, cursor_row - limit + 1), len(rows) - limit)
+            rows = rows[top:top + limit]
+            cursor_row -= top
+        return rows, cursor_row, min(self.cols, indent + cursor_x + 1)
 
     def _content_lines(self) -> list[bytes]:
         lines: list[bytes] = []
@@ -228,36 +284,47 @@ class AiPanel:
         label = f" ludvart · {self.provider} " if self.provider else " ludvart "
         if self.thinking:
             label += f"· {self.activity} "
-        hints = "^O/Esc:close  ^G Up/Dn/PgUp/Dn:resize  PgUp/Dn:scroll "
+        hints = "^O/Esc:close  M-Enter:newline  ^G Up/Dn:resize  PgUp/Dn:scroll "
         if more_above > 0:
             hints = f"\u2191{more_above} more  " + hints
         text = (label + "· " + hints)[: self.cols].ljust(self.cols)
         return _REVERSE + text.encode("utf-8", "replace") + _RESET + _EOL
 
-    def _input_line(self) -> bytes:
+    def _input_line(self) -> list[bytes]:
+        """The input block, one payload per row it occupies."""
         if self.confirm_prompt:
             text = self.confirm_prompt[: self.cols]
-            return _BOLD + _CYAN + text.encode("utf-8", "replace") + _RESET + _EOL
+            return [_BOLD + _CYAN + text.encode("utf-8", "replace") + _RESET + _EOL]
         if self.steer_prompt:
             visible = self._input_view(prompt=self.steer_prompt, badge=False)[0]
-            return (
+            return [
                 _BOLD + _CYAN + self.steer_prompt.encode("utf-8", "replace")
                 + _RESET + visible.encode("utf-8", "replace") + _EOL
-            )
-        visible = self._input_view()[0]
+            ]
         prefix = self._prompt_prefix()
-        badge = (
-            _DIM + prefix.encode("ascii") + _RESET if prefix else b""
-        )
-        return badge + _CYAN + _PROMPT.encode("ascii") + _RESET + visible.encode(
-            "utf-8", "replace"
-        ) + _EOL
+        badge = _DIM + prefix.encode("ascii") + _RESET if prefix else b""
+        if self.masked:
+            visible = self._input_view()[0]
+            return [badge + _CYAN + _PROMPT.encode("ascii") + _RESET
+                    + visible.encode("utf-8", "replace") + _EOL]
+        rows = self._input_block()[0]
+        out = []
+        for i, row in enumerate(rows):
+            if i == 0:
+                head = badge + _CYAN + _PROMPT.encode("ascii") + _RESET
+            else:
+                # Continuations line up under the first row's text so a pasted
+                # block reads as one thing rather than a stack of prompts.
+                head = b" " * (len(prefix) + len(_PROMPT))
+            out.append(head + row.encode("utf-8", "replace") + _EOL)
+        return out
 
     def render(self, height: int, cols: int) -> list[bytes]:
         """Return exactly ``height`` drawable row payloads for the panel."""
         self.set_cols(cols)
         self.height = height
-        content_h = max(1, height - 2)
+        input_rows = self._input_line()[: max(1, height - 2)]
+        content_h = max(1, height - 1 - len(input_rows))
 
         lines = self._content_lines()
         max_start = max(0, len(lines) - content_h)
@@ -269,7 +336,7 @@ class AiPanel:
 
         rows = [self._header(start)]
         rows += window
-        rows.append(self._input_line())
+        rows += input_rows
         if len(rows) > height:
             rows = rows[:height]
         while len(rows) < height:

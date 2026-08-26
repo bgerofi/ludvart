@@ -967,7 +967,8 @@ class Ludvart:
             out += comp.row_update(y, render_row(self.screen, y, cols))
         for i, payload in enumerate(panel.render(panel.height, cols)):
             out += comp.row_update(app_rows + i, payload)
-        out += b"\x1b[%d;%dH" % (self._phys_rows, panel.cursor_col())
+        cur_row, cur_col = panel.cursor_rowcol()
+        out += b"\x1b[%d;%dH" % (app_rows + cur_row + 1, cur_col)
         self._write_all(self._stdout_fd, out)
 
     def _leave_split(self) -> None:
@@ -1035,14 +1036,16 @@ class Ludvart:
             self._panel_input(rest)
 
     def _apply_paste(self, pasted: bytes) -> None:
-        """Insert pasted bytes into the single-line input as plain text."""
+        """Insert pasted bytes into the input, newlines and all."""
         panel = self._panel
         if panel is None:
             return
         text = pasted.decode("utf-8", "replace")
-        # The input is one line: fold newlines/tabs/controls to spaces so the
-        # paste never submits or breaks the layout.
-        cleaned = "".join(ch if ch >= " " else " " for ch in text)
+        # Newlines are kept so a pasted snippet stays the shape it was written
+        # in; bracketed paste is what makes that safe, since the terminal tells
+        # us these bytes are content rather than an Enter the user pressed.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        cleaned = "".join(ch if ch >= " " or ch == "\n" else " " for ch in text)
         if cleaned:
             panel.editor.insert(cleaned)
             panel.scroll = 0
@@ -1345,6 +1348,9 @@ class Ludvart:
         editor = panel.editor
         if key in (b"\r", b"\n"):
             self._panel_submit()
+        elif key in (b"\x1b\r", b"\x1b\n"):  # Alt-Enter -> newline, not submit
+            editor.insert("\n")
+            panel.scroll = 0
         elif key in (b"\x7f", b"\x08"):  # Backspace
             editor.backspace()
             panel.scroll = 0
@@ -1354,10 +1360,12 @@ class Ludvart:
             editor.right()
         elif key in (b"\x1b[D", b"\x1bOD"):  # Left
             editor.left()
-        elif key in (b"\x1b[A", b"\x1bOA"):  # Up -> scroll transcript
-            panel.scroll_up(1)
-        elif key in (b"\x1b[B", b"\x1bOB"):  # Down -> scroll transcript
-            panel.scroll_down(1)
+        elif key in (b"\x1b[A", b"\x1bOA"):  # Up -> within the input, else scroll
+            if not editor.up():
+                panel.scroll_up(1)
+        elif key in (b"\x1b[B", b"\x1bOB"):  # Down -> within the input, else scroll
+            if not editor.down():
+                panel.scroll_down(1)
         elif key in (b"\x1b[H", b"\x1bOH", b"\x1b[1~", b"\x1b[7~"):  # Home
             editor.home()
         elif key in (b"\x1b[F", b"\x1bOF", b"\x1b[4~", b"\x1b[8~"):  # End

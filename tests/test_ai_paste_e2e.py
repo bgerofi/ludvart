@@ -4,10 +4,11 @@ in the prompt correctly through the real ludvart binary.
 Drives a real PTY:
   1. Open the panel (Ctrl-O).
   2. Type "hello world".
-  3. Bracketed-paste " PASTED\ntext" -> newline folds to a space, no submit.
+  3. Bracketed-paste " PASTED\ntext" -> the newline is kept and nothing submits.
   4. Move the cursor left and insert a char mid-line.
-  5. Home + Ctrl-K erases everything.
-Renders ludvart's output through pyte and checks the "ludvart> " input line.
+  5. Alt-Enter opens a third line and typing continues on it.
+  6. Up/Up + Home + Ctrl-K clears only the line the cursor is on.
+Renders ludvart's output through pyte and checks the input block.
 
 Run:
     cd /local_home/bgerofi1/src/ludvart && source .venv/bin/activate \
@@ -48,6 +49,19 @@ def input_line(screen):
     return ""
 
 
+def input_block(screen):
+    """The input rows: the 'ludvart>' row and every row below it.
+
+    Continuations carry no prompt of their own -- they are indented to line up
+    under the first row's text -- so they are found by position, not by marker.
+    """
+    rows = [r.rstrip() for r in screen.display]
+    for i, row in enumerate(rows):
+        if "ludvart>" in row:
+            return [r.strip() for r in rows[i:]]
+    return []
+
+
 def main():
     pid, m = pty.fork()
     if pid == 0:
@@ -70,28 +84,55 @@ def main():
         line = input_line(screen)
         checks.add(name, line.endswith(want), f"line is {line!r}, wanted it to end with {want!r}")
 
+    def expect_block(name, want):
+        """Wait for the input block to read ``want``, and record the check."""
+        wait_for(m, stream.feed, lambda: input_block(screen) == want, 5)
+        got = input_block(screen)
+        checks.add(name, got == want, f"block is {got!r}, wanted {want!r}")
+
     # 1. plain typing
     os.write(m, b"hello world")
     expect("typing appears in the input line", "hello world")
 
-    # 2. bracketed paste with an embedded newline (must fold to space, no submit)
+    # 2. bracketed paste with an embedded newline: kept as a newline, no submit
     os.write(m, PASTE_START + b" PASTED\ntext" + PASTE_END)
-    expect("pasted newline folds to a space and does not submit", "hello world PASTED text")
+    expect_block(
+        "a pasted newline stays a newline and does not submit",
+        ["ludvart> hello world PASTED", "text"],
+    )
 
     # 3. move left 4 (into "text") and insert 'Z'
     for _ in range(4):
         os.write(m, b"\x1b[D")  # Left
         pump(m, stream, 0.2)
     os.write(m, b"Z")
-    expect("editing mid-line inserts at the cursor", "hello world PASTED Ztext")
+    expect_block(
+        "editing mid-line inserts at the cursor",
+        ["ludvart> hello world PASTED", "Ztext"],
+    )
 
-    # 4. Home then Ctrl-K clears the whole line
+    # 4. Alt-Enter opens another line rather than submitting. The cursor is
+    # still between the 'Z' and "text", and that is where the line breaks --
+    # Alt-Enter is a newline typed at the cursor, not an append at the end.
+    os.write(m, b"\x1b\r")
+    pump(m, stream, 0.3)
+    os.write(m, b"third")
+    expect_block(
+        "Alt-Enter opens a line at the cursor instead of submitting",
+        ["ludvart> hello world PASTED", "Z", "thirdtext"],
+    )
+
+    # 5. Up/Up + Home + Ctrl-K kills one line, not the whole buffer
+    for _ in range(2):
+        os.write(m, b"\x1b[A")  # Up
+        pump(m, stream, 0.2)
     os.write(m, b"\x1b[H")   # Home
     pump(m, stream, 0.3)
     os.write(m, b"\x0b")     # Ctrl-K kill-to-end
-    wait_for(m, stream.feed, lambda: input_line(screen).strip() == "ludvart>", 5)
-    line = input_line(screen)
-    checks.add("Home + Ctrl-K clears the line", line.strip() == "ludvart>", f"line is {line!r}")
+    expect_block(
+        "Ctrl-K clears the line the cursor is on and leaves the rest",
+        ["ludvart>", "Z", "thirdtext"],
+    )
 
     os.write(m, b"\x0f")  # close panel
     time.sleep(0.2)

@@ -6,7 +6,7 @@ Run:
 """
 
 from ludvart.lineedit import LineEditor
-from ludvart.panel import AiPanel
+from ludvart.panel import INPUT_MAX_ROWS, AiPanel
 
 
 def test_line_editor():
@@ -84,7 +84,89 @@ def test_input_view_scroll():
     print("input view scroll: OK")
 
 
+def test_editor_moves_between_lines():
+    """The buffer is a document now, so home/end/kill act on one line of it."""
+    ed = LineEditor("alpha\nbetas\ngamma")
+    ed.cursor = 0
+    assert ed.cursor_line_col() == (0, 0)
+    assert ed.down() and ed.cursor_line_col() == (1, 0)
+    ed.end(); assert ed.cursor_line_col() == (1, 5)
+    ed.home(); assert ed.cursor_line_col() == (1, 0)
+
+    # A column is kept across the move, clamped by a shorter line.
+    ed.set_text("longer line\nab\ntail")
+    ed.cursor = 9  # on the first line, past the width of the second
+    assert ed.down() and ed.cursor_line_col() == (1, 2)
+
+    # The ends of the document report no further line to move to.
+    ed.cursor = 0
+    assert ed.up() is False and ed.cursor == 0
+    ed.cursor = len(ed.text)
+    assert ed.down() is False and ed.cursor == len(ed.text)
+
+    # Ctrl-U/Ctrl-K stay inside the current line.
+    ed.set_text("one\ntwo three\nfour")
+    ed.cursor = ed.text.index("three")
+    ed.kill_to_end()
+    assert ed.text == "one\ntwo \nfour", ed.text
+    ed.kill_to_start()
+    assert ed.text == "one\n\nfour", ed.text
+
+    # Ctrl-W crosses a newline rather than stalling on it.
+    ed.set_text("word\n")
+    ed.cursor = len(ed.text)
+    ed.delete_word_back()
+    assert ed.text == "" and ed.cursor == 0
+    print("editor moves between lines: OK")
+
+
+def test_input_block_wraps_and_bounds_its_height():
+    panel = AiPanel(cols=20, height=8, provider="test")
+    # prompt is 9 wide -> 11 columns of text per row
+    panel.editor.set_text("abc\ndefghijklmnopqrstuv")
+    rows, cur_row, cur_col = panel._input_block()
+    assert rows == ["abc", "defghijklmn", "opqrstuv"], rows
+    assert cur_row == 2 and cur_col == 9 + len("opqrstuv") + 1
+
+    # The block never crowds the transcript out of the panel: in a short panel
+    # the panel's own height is the binding limit...
+    panel.editor.set_text("\n".join(str(i) for i in range(40)))
+    rows, cur_row, _ = panel._input_block()
+    assert len(rows) == panel.height - 2, len(rows)
+    assert rows[cur_row] == "39", rows  # the cursor's row is the one kept
+    assert panel.cursor_rowcol()[0] == panel.height - 1
+
+    # ...and in a tall one INPUT_MAX_ROWS is, so a big paste still leaves most
+    # of the panel showing the conversation it is about.
+    tall = AiPanel(cols=20, height=20, provider="test")
+    tall.editor.set_text("\n".join(str(i) for i in range(40)))
+    rows, cur_row, _ = tall._input_block()
+    assert len(rows) == INPUT_MAX_ROWS, len(rows)
+    assert rows[cur_row] == "39", rows
+
+    # Rendering still yields exactly `height` rows, transcript squeezed to fit.
+    drawn = panel.render(panel.height, panel.cols)
+    assert len(drawn) == panel.height
+    assert b"39" in drawn[-1]
+    print("input block wraps and bounds its height: OK")
+
+
+def test_a_masked_key_never_wraps_onto_a_second_row():
+    """An API key is masked precisely so it does not sit on screen; wrapping it
+    across rows would put the whole of it there in asterisks and, worse, leave
+    part behind when the block shrank back."""
+    panel = AiPanel(cols=20, height=8, provider="test")
+    panel.masked = True
+    panel.editor.set_text("k" * 60)
+    assert len(panel._input_line()) == 1
+    assert panel.cursor_rowcol()[0] == panel.height - 1
+    print("a masked key stays on one row: OK")
+
+
 if __name__ == "__main__":
     test_line_editor()
     test_input_view_scroll()
+    test_editor_moves_between_lines()
+    test_input_block_wraps_and_bounds_its_height()
+    test_a_masked_key_never_wraps_onto_a_second_row()
     print("all panel-edit tests passed")

@@ -114,7 +114,9 @@ Inside the panel:
 
 - Type your request and press **Enter** to send it; **Esc** or **Ctrl-O** closes
   the panel. The input line is a full editor — arrow keys, Home/End, Ctrl-A/E,
-  Ctrl-U/K/W, and mouse (bracketed) paste all work.
+  Ctrl-U/K/W, and mouse (bracketed) paste all work. The input is multi-line:
+  Alt-Enter starts a new line, a paste keeps the newlines it came with, and
+  Up/Down move within the input before they scroll the transcript.
 - **Up / Down** scroll the conversation; **PageUp / PageDown** scroll by a page.
 - **Ctrl-G Up / Down** grow or shrink the panel one row; **Ctrl-G PageUp** snaps
   it to half the screen and **Ctrl-G PageDown** restores the previous height.
