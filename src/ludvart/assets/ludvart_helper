@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
 
-VER = "0.4.2"
+VER = "0.4.3"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -24,7 +24,8 @@ Result framing:
     <one line of base64; present only when the op returns data>
     <<<LUDVART:END op=NAME exit=CODE key=value ...>>>
 Base64-decode the line between BEGIN and END to get the payload. Decide success
-or failure from exit= alone.
+or failure from exit= alone. The one exception is op=usage (exit=7), whose
+payload is plain text spanning several lines -- see the exit codes below.
 
 Every subcommand ends with that END sentinel, run included -- run is only the
 exception to the BEGIN half, because its command writes straight to the terminal
@@ -45,6 +46,8 @@ Exit codes:
        Nothing ran and nothing was written. The frame is op=usage and its
        payload is the error followed by the section below for the subcommand
        that was attempted, so the call can be corrected and retried at once.
+       That one payload is plain text rather than base64, precisely so the
+       correction can be read where it lands instead of having to be decoded.
 
 Any write first copies the target to PATH.ludvart.bak, and a written .py file is
 compile-checked (meta pycheck=ok or pycheck=FAILED).
@@ -100,6 +103,8 @@ search PATTERN [--path P] [--glob G]
     Recursive Python-regex search. P defaults to "." and may be a file or a
     directory; --glob filters file names, e.g. "*.py". Skips .git, node_modules
     and __pycache__. Payload is newline-joined "path:lineno:text" hits.
+    The pattern may equally be given as --pattern PATTERN, and grep's -n is
+    accepted and ignored, since every hit already carries its line number.
     exit=0 when there was at least one hit, exit=1 when there was none.
     Meta: matches=.
     ~/.ludvart/bin/ludvart_helper search "def main" --path src --glob "*.py"
@@ -138,10 +143,32 @@ def _spec_section(name):
             out.append(line)
     return "\n".join(out).rstrip()
 
+def _usage_text(name, message):
+    # The whole SPEC would be both unreadable on a terminal and unsafe to print
+    # unencoded, since it quotes the sentinel itself. A subcommand section never
+    # does, so name one when we can and otherwise just point at spec.
+    section = _spec_section(name)
+    if not section:
+        section = ("subcommands: " + CAPS.replace(",", ", ") + "\n"
+                   "~/.ludvart/bin/ludvart_helper spec  -- the full reference")
+    return "error: " + message + "\n\n" + section
+
 def emit(op, payload_bytes=None, code=0, **meta):
-    sys.stdout.write("<<<LUDVART:BEGIN op=%s>>>\n" % op)
+    payload = None
     if payload_bytes is not None:
-        sys.stdout.write(base64.b64encode(payload_bytes).decode() + "\n")
+        payload = base64.b64encode(payload_bytes).decode()
+    return _frame(op, payload, code, meta)
+
+def emit_plain(op, text, code=0, **meta):
+    # Help is not data: base64 would hide the correction from the very reader
+    # who needs it, on the screen and in the model's next snapshot alike. Only
+    # for text this file wrote itself, which never contains the sentinel.
+    return _frame(op, text, code, meta)
+
+def _frame(op, payload, code, meta):
+    sys.stdout.write("<<<LUDVART:BEGIN op=%s>>>\n" % op)
+    if payload is not None:
+        sys.stdout.write(payload + "\n")
     metastr = "".join(" %s=%s" % (k, v) for k, v in meta.items())
     sys.stdout.write("<<<LUDVART:END op=%s exit=%d%s>>>\n" % (op, code, metastr))
     sys.stdout.flush()
@@ -290,7 +317,15 @@ def op_structured_patch(a):
 SKIP = {".git", "node_modules", "__pycache__"}
 
 def op_search(a):
-    rx = re.compile(a.pattern)
+    pattern = a.pattern if a.pattern is not None else a.pattern_flag
+    if pattern is None:
+        return emit_plain("usage", _usage_text("search", "a pattern is required"),
+                          7, error="bad_args", subcommand="search")
+    if a.pattern is not None and a.pattern_flag is not None:
+        return emit_plain("usage", _usage_text(
+            "search", "the pattern was given twice, positionally and as --pattern"),
+            7, error="bad_args", subcommand="search")
+    rx = re.compile(pattern)
     hits = []
     root = a.path
     files = []
@@ -339,8 +374,8 @@ class Parser(argparse.ArgumentParser):
             # An unknown flag is reported by the top-level parser, which knows
             # nothing of the subcommand the caller meant.
             name = (sys.argv[1:2] or [""])[0]
-        text = "error: " + message + "\n\n" + (_spec_section(name) or SPEC)
-        emit("usage", text.encode(), 7, error="bad_args", subcommand=name or "none")
+        emit_plain("usage", _usage_text(name, message), 7,
+                   error="bad_args", subcommand=name or "none")
         sys.exit(7)
 
 def main():
@@ -356,7 +391,7 @@ def main():
     rp = sub.add_parser("replace"); rp.add_argument("path"); rp.add_argument("--old-b64", dest="old_b64", required=True); rp.add_argument("--new-b64", dest="new_b64", required=True); rp.add_argument("--count", type=int); rp.add_argument("--expect-count", dest="expect_count", type=int); rp.add_argument("--dry-run", action="store_true"); rp.set_defaults(fn=op_replace)
     rr = sub.add_parser("replace-range"); rr.add_argument("path"); rr.add_argument("--start", type=int, required=True); rr.add_argument("--end", type=int, required=True); rr.add_argument("--b64", required=True); rr.add_argument("--dry-run", action="store_true"); rr.set_defaults(fn=op_replace_range)
     sp = sub.add_parser("structured-patch"); sp.add_argument("path"); sp.add_argument("--b64", required=True); sp.add_argument("--dry-run", action="store_true"); sp.set_defaults(fn=op_structured_patch)
-    s = sub.add_parser("search"); s.add_argument("pattern"); s.add_argument("--path", default="."); s.add_argument("--glob"); s.set_defaults(fn=op_search)
+    s = sub.add_parser("search"); s.add_argument("pattern", nargs="?"); s.add_argument("--pattern", dest="pattern_flag"); s.add_argument("--path", default="."); s.add_argument("--glob"); s.add_argument("-n", "--line-number", action="store_true"); s.set_defaults(fn=op_search)
     rn = sub.add_parser("run"); rn.add_argument("--b64", required=True); rn.set_defaults(fn=op_run)
     inf = sub.add_parser("info"); inf.set_defaults(fn=op_info)
     sc = sub.add_parser("spec"); sc.set_defaults(fn=op_spec)

@@ -112,6 +112,18 @@ def test_spec_is_the_helpers_own_documentation():
     print("spec is extracted, complete, and self-consistent: OK")
 
 
+def run_helper(*args):
+    """Run the golden asset with ``args`` and return the completed process."""
+    with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as fh:
+        fh.write(LUDVART_HELPER_SOURCE)
+        script = fh.name
+    try:
+        return subprocess.run(["python3", script] + list(args),
+                              capture_output=True, text=True)
+    finally:
+        os.unlink(script)
+
+
 def test_a_wrong_argument_answers_with_the_right_one():
     """A misspelled flag must come back framed, carrying that subcommand's spec.
 
@@ -119,22 +131,77 @@ def test_a_wrong_argument_answers_with_the_right_one():
     message is not machine-readable and exits 2, which the helper already uses
     for "old text not found", so the mistake used to dead-end.
     """
-    with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as fh:
-        fh.write(LUDVART_HELPER_SOURCE)
-        script = fh.name
-    try:
-        r = subprocess.run(["python3", script, "run", "--cmd", "ls"],
-                           capture_output=True, text=True)
-    finally:
-        os.unlink(script)
+    r = run_helper("run", "--cmd", "ls")
     assert r.returncode == 7, (r.returncode, r.stderr)
     lines = r.stdout.splitlines()
     assert lines[0] == "<<<LUDVART:BEGIN op=usage>>>"
     assert "exit=7" in lines[-1] and "subcommand=run" in lines[-1]
-    payload = base64.b64decode(lines[1]).decode()
+    payload = "\n".join(lines[1:-1])
     assert "run --b64 CMD" in payload, payload
     assert "read PATH" not in payload, "dumped the whole spec, not the section"
     print("a wrong argument answers with the right one: OK")
+
+
+def test_the_correction_is_readable_where_it_lands():
+    """The usage payload is the one that is not base64.
+
+    Every other payload is data, which base64 protects. This one is help, and
+    encoding it hides the answer from the reader who just got it wrong -- who
+    must then spend a decode step to learn what a single line of text on the
+    screen could have told them.
+    """
+    r = run_helper("run", "--cmd", "ls")
+    payload = "\n".join(r.stdout.splitlines()[1:-1])
+    assert payload.startswith("error: "), payload
+    try:
+        base64.b64decode(payload.splitlines()[0], validate=True)
+        raise AssertionError("the usage payload is still base64")
+    except base64.binascii.Error:
+        pass
+    # Printing it raw is only safe while it cannot quote the framing itself.
+    assert "<<<LUDVART:" not in payload, payload
+    print("the usage error reads as plain text: OK")
+
+
+def test_an_unknown_subcommand_does_not_spill_the_whole_spec():
+    """There is no section to name, and the spec quotes the sentinel itself."""
+    r = run_helper("grep", "foo")
+    assert r.returncode == 7, (r.returncode, r.stderr)
+    payload = "\n".join(r.stdout.splitlines()[1:-1])
+    assert "<<<LUDVART:" not in payload, payload
+    assert "subcommands: read, write" in payload, payload
+    assert len(payload.splitlines()) < 8, payload
+    print("an unknown subcommand gets a short pointer: OK")
+
+
+def test_search_takes_its_pattern_the_way_grep_would():
+    """Every other payload here arrives through a --flag, so the model reaches
+    for one; and it reaches for grep's spelling, -n and all. Both forms name the
+    same search unambiguously, so refusing them only cost a round-trip.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "bashrc")
+        with open(target, "w") as fh:
+            fh.write("PS1=x\n# interactive\nreturn\n")
+
+        flags = run_helper("search", "--path", target, "--pattern", "PS1", "-n")
+        assert flags.returncode == 0, flags.stdout
+        assert "matches=1" in flags.stdout.splitlines()[-1], flags.stdout
+
+        positional = run_helper("search", "PS1", "--path", target)
+        assert positional.stdout == flags.stdout, (positional.stdout, flags.stdout)
+
+        # A flag that would change the answer must still be refused.
+        both = run_helper("search", "PS1", "--pattern", "PS1", "--path", target)
+        assert both.returncode == 7, both.stdout
+        assert "twice" in both.stdout, both.stdout
+        ignore_case = run_helper("search", "ps1", "--path", target, "-i")
+        assert ignore_case.returncode == 7, ignore_case.stdout
+
+        missing = run_helper("search", "--path", target)
+        assert missing.returncode == 7, missing.stdout
+        assert "pattern is required" in missing.stdout, missing.stdout
+    print("search accepts the pattern as a flag: OK")
 
 
 def test_command_is_quote_safe():
@@ -234,6 +301,9 @@ if __name__ == "__main__":
     test_runs_under_old_python_if_available()
     test_spec_is_the_helpers_own_documentation()
     test_a_wrong_argument_answers_with_the_right_one()
+    test_the_correction_is_readable_where_it_lands()
+    test_an_unknown_subcommand_does_not_spill_the_whole_spec()
+    test_search_takes_its_pattern_the_way_grep_would()
     test_command_is_quote_safe()
     test_install_current_and_repair()
     test_a_mangled_transfer_never_overwrites_a_good_helper()
