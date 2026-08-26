@@ -120,7 +120,9 @@ Inside the panel:
   any arrow (or Home/End) extends a selection, shown in reverse video; typing
   or Backspace then replaces or deletes the whole block. Some terminals never
   report Shift, so Ctrl-Space sets a mark that makes plain movement select
-  instead; press it again to cancel.
+  instead; press it again to cancel. (PuTTY drops the modifier by default: set
+  Terminal -> Keyboard -> "Shift/Ctrl/Alt with the arrow keys" to "xterm-style
+  bitmap" to get the shifted arrows themselves.)
 - **Up / Down** scroll the conversation; **PageUp / PageDown** scroll by a page.
 - **Ctrl-G Up / Down** grow or shrink the panel one row; **Ctrl-G PageUp** snaps
   it to half the screen and **Ctrl-G PageDown** restores the previous height.
