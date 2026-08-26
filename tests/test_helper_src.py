@@ -204,6 +204,52 @@ def test_search_takes_its_pattern_the_way_grep_would():
     print("search accepts the pattern as a flag: OK")
 
 
+def test_search_survives_its_arguments_arriving_backwards():
+    """search is the only subcommand whose first argument is not a path.
+
+    Six of the seven that take one put it first, so the model learns that shape
+    from the interface itself and writes "search FILE REGEX". Both readings of
+    two bare arguments name the same search whenever exactly one of them exists,
+    which is the whole of the ambiguity -- so resolve it instead of refusing.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "bashrc")
+        with open(target, "w") as fh:
+            fh.write("PS1=x\n# interactive\nreturn\n")
+
+        forwards = run_helper("search", "PS1|return", "--path", target)
+        assert forwards.returncode == 0, forwards.stdout
+        for spelling in (
+            ["search", target, "PS1|return"],          # the natural slip
+            ["search", "PS1|return", target],          # pattern first, path bare
+            ["search", "--path", target, "--pattern", "PS1|return"],
+        ):
+            r = run_helper(*spelling)
+            assert r.stdout == forwards.stdout, (spelling, r.stdout)
+
+        # Nothing to go on: two paths, or two non-paths.
+        other = os.path.join(tmp, "sub")
+        os.mkdir(other)
+        for pair in ((target, other), ("nope1", "nope2")):
+            r = run_helper("search", pair[0], pair[1])
+            assert r.returncode == 7, (pair, r.stdout)
+            assert "cannot tell which" in r.stdout, r.stdout
+
+        # An unquoted pattern with spaces looks like three arguments.
+        r = run_helper("search", "def", "main", target)
+        assert r.returncode == 7 and "quoted" in r.stdout, r.stdout
+    print("search accepts its arguments in either order: OK")
+
+
+def test_the_spec_names_the_one_subcommand_that_breaks_the_pattern():
+    """The rule only helps if the exception to it is stated with it."""
+    order = LUDVART_HELPER_SPEC.split("Argument order:", 1)
+    assert len(order) == 2, "the spec no longer states the argument-order rule"
+    rule = order[1].split("\n\n", 1)[0]
+    assert "except search" in rule, rule
+    print("the spec names the argument-order exception: OK")
+
+
 def test_command_is_quote_safe():
     cmd = helper_install_command()
     lines = cmd.split("\n")
@@ -304,6 +350,8 @@ if __name__ == "__main__":
     test_the_correction_is_readable_where_it_lands()
     test_an_unknown_subcommand_does_not_spill_the_whole_spec()
     test_search_takes_its_pattern_the_way_grep_would()
+    test_search_survives_its_arguments_arriving_backwards()
+    test_the_spec_names_the_one_subcommand_that_breaks_the_pattern()
     test_command_is_quote_safe()
     test_install_current_and_repair()
     test_a_mangled_transfer_never_overwrites_a_good_helper()

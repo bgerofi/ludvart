@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
 
-VER = "0.4.3"
+VER = "0.4.4"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -51,6 +51,12 @@ Exit codes:
 
 Any write first copies the target to PATH.ludvart.bak, and a written .py file is
 compile-checked (meta pycheck=ok or pycheck=FAILED).
+
+Argument order: every subcommand that takes a path takes it as the first
+argument -- except search, whose first argument is the PATTERN and whose path is
+--path. That one exception is worth remembering; a search written the other way
+round is accepted, but only because it can be worked out, not because it is the
+syntax.
 
 Size limit: the helper is reached by typing a command line into the terminal,
 and that channel carries only about 2 KB per call -- a longer one is liable to
@@ -105,6 +111,10 @@ search PATTERN [--path P] [--glob G]
     and __pycache__. Payload is newline-joined "path:lineno:text" hits.
     The pattern may equally be given as --pattern PATTERN, and grep's -n is
     accepted and ignored, since every hit already carries its line number.
+    Given two bare arguments, whichever one names something that exists is
+    taken as the path and the other as the pattern, so "search FILE REGEX"
+    works as well as "search REGEX FILE". When both or neither exist there is
+    nothing to go on: say which is which with --pattern and --path.
     exit=0 when there was at least one hit, exit=1 when there was none.
     Meta: matches=.
     ~/.ludvart/bin/ludvart_helper search "def main" --path src --glob "*.py"
@@ -316,18 +326,45 @@ def op_structured_patch(a):
 
 SKIP = {".git", "node_modules", "__pycache__"}
 
+def _resolve_search(a):
+    """Sort the bare arguments into a pattern and a path.
+
+    Every other subcommand takes its path first, so writing search that way is
+    the natural slip rather than a careless one. Both readings of "search A B"
+    describe the same search whenever exactly one of A and B exists on disk, so
+    working it out beats spending a round-trip refusing it. Returns
+    (pattern, path) or (None, complaint).
+    """
+    words = list(a.words)
+    path = a.path
+    if a.pattern_flag is not None:
+        if words:
+            return None, "the pattern was given twice, positionally and as --pattern"
+        pattern = a.pattern_flag
+    elif not words:
+        return None, "a pattern is required"
+    elif len(words) == 1:
+        pattern = words[0]
+    elif len(words) == 2:
+        if path is not None:
+            return None, "the path was given twice, positionally and as --path"
+        first, second = words
+        if os.path.exists(first) == os.path.exists(second):
+            return None, ("cannot tell which of %r and %r is the pattern:"
+                          " name them with --pattern and --path" % (first, second))
+        pattern, path = (second, first) if os.path.exists(first) else (first, second)
+    else:
+        return None, "too many arguments: a pattern containing spaces must be quoted"
+    return pattern, ("." if path is None else path)
+
 def op_search(a):
-    pattern = a.pattern if a.pattern is not None else a.pattern_flag
+    pattern, path = _resolve_search(a)
     if pattern is None:
-        return emit_plain("usage", _usage_text("search", "a pattern is required"),
-                          7, error="bad_args", subcommand="search")
-    if a.pattern is not None and a.pattern_flag is not None:
-        return emit_plain("usage", _usage_text(
-            "search", "the pattern was given twice, positionally and as --pattern"),
-            7, error="bad_args", subcommand="search")
+        return emit_plain("usage", _usage_text("search", path), 7,
+                          error="bad_args", subcommand="search")
     rx = re.compile(pattern)
     hits = []
-    root = a.path
+    root = path
     files = []
     if os.path.isfile(root):
         files = [root]
@@ -391,7 +428,7 @@ def main():
     rp = sub.add_parser("replace"); rp.add_argument("path"); rp.add_argument("--old-b64", dest="old_b64", required=True); rp.add_argument("--new-b64", dest="new_b64", required=True); rp.add_argument("--count", type=int); rp.add_argument("--expect-count", dest="expect_count", type=int); rp.add_argument("--dry-run", action="store_true"); rp.set_defaults(fn=op_replace)
     rr = sub.add_parser("replace-range"); rr.add_argument("path"); rr.add_argument("--start", type=int, required=True); rr.add_argument("--end", type=int, required=True); rr.add_argument("--b64", required=True); rr.add_argument("--dry-run", action="store_true"); rr.set_defaults(fn=op_replace_range)
     sp = sub.add_parser("structured-patch"); sp.add_argument("path"); sp.add_argument("--b64", required=True); sp.add_argument("--dry-run", action="store_true"); sp.set_defaults(fn=op_structured_patch)
-    s = sub.add_parser("search"); s.add_argument("pattern", nargs="?"); s.add_argument("--pattern", dest="pattern_flag"); s.add_argument("--path", default="."); s.add_argument("--glob"); s.add_argument("-n", "--line-number", action="store_true"); s.set_defaults(fn=op_search)
+    s = sub.add_parser("search"); s.add_argument("words", nargs="*"); s.add_argument("--pattern", dest="pattern_flag"); s.add_argument("--path"); s.add_argument("--glob"); s.add_argument("-n", "--line-number", action="store_true"); s.set_defaults(fn=op_search)
     rn = sub.add_parser("run"); rn.add_argument("--b64", required=True); rn.set_defaults(fn=op_run)
     inf = sub.add_parser("info"); inf.set_defaults(fn=op_info)
     sc = sub.add_parser("spec"); sc.set_defaults(fn=op_spec)
