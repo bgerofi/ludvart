@@ -1366,6 +1366,21 @@ class Ludvart:
         elif key in (b"\x1b[B", b"\x1bOB"):  # Down -> within the input, else scroll
             if not editor.down():
                 panel.scroll_down(1)
+        # Shift-arrows extend a selection, as they do in every GUI editor. A
+        # shifted Up/Down at the edge of the input does not fall through to
+        # scrolling the transcript: the user is selecting, not navigating.
+        elif key in (b"\x1b[1;2C", b"\x1b[c"):  # Shift-Right
+            editor.right(select=True)
+        elif key in (b"\x1b[1;2D", b"\x1b[d"):  # Shift-Left
+            editor.left(select=True)
+        elif key in (b"\x1b[1;2A", b"\x1b[a"):  # Shift-Up
+            editor.up(select=True)
+        elif key in (b"\x1b[1;2B", b"\x1b[b"):  # Shift-Down
+            editor.down(select=True)
+        elif key in (b"\x1b[1;2H", b"\x1b[1;2~", b"\x1b[7$"):  # Shift-Home
+            editor.home(select=True)
+        elif key in (b"\x1b[1;2F", b"\x1b[4;2~", b"\x1b[8$"):  # Shift-End
+            editor.end(select=True)
         elif key in (b"\x1b[H", b"\x1bOH", b"\x1b[1~", b"\x1b[7~"):  # Home
             editor.home()
         elif key in (b"\x1b[F", b"\x1bOF", b"\x1b[4~", b"\x1b[8~"):  # End

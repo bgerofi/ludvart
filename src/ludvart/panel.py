@@ -189,20 +189,24 @@ class AiPanel:
             row += min(self._input_block()[1], rows - 1)
         return row, self.cursor_col()
 
-    def _input_block(self) -> tuple[list[str], int, int]:
-        """Wrap the input into rows, with the cursor's row index and column.
+    def _input_block(self) -> tuple[list[str], int, int, list[int]]:
+        """Wrap the input into rows, with the cursor's position and row offsets.
 
-        A long logical line wraps rather than scrolling sideways: with several
-        lines in the buffer there is no single row to scroll, and seeing the
-        whole of what you pasted is the point of accepting a paste at all.
+        The offsets are the buffer index each row starts at, which is what the
+        selection is measured in. A long logical line wraps rather than scrolling
+        sideways: with several lines in the buffer there is no single row to
+        scroll, and seeing the whole of what you pasted is the point of accepting
+        a paste at all.
         """
         prefix_w = len(self._prompt_prefix())
         indent = prefix_w + len(_PROMPT)
         avail = max(1, self.cols - indent)
         cur_line, cur_col = self.editor.cursor_line_col()
         rows: list[str] = []
+        starts: list[int] = []
         cursor_row = 0
         cursor_x = 0
+        off = 0
         for i, line in enumerate(self.editor.lines):
             segs = [line[j:j + avail] for j in range(0, len(line), avail)]
             if not segs:
@@ -216,13 +220,35 @@ class AiPanel:
                 seg = min(cur_col // avail, len(segs) - 1)
                 cursor_row = len(rows) + seg
                 cursor_x = cur_col - seg * avail
+            starts += [off + j * avail for j in range(len(segs))]
             rows += segs
+            off += len(line) + 1
         limit = max(1, min(INPUT_MAX_ROWS, self.height - 2))
         if len(rows) > limit:
             top = min(max(0, cursor_row - limit + 1), len(rows) - limit)
             rows = rows[top:top + limit]
+            starts = starts[top:top + limit]
             cursor_row -= top
-        return rows, cursor_row, min(self.cols, indent + cursor_x + 1)
+        return rows, cursor_row, min(self.cols, indent + cursor_x + 1), starts
+
+    def _highlight(self, row: str, start: int) -> bytes:
+        """Encode one input row, reverse-video over any selected part of it."""
+        span = self.editor.selection()
+        if span is None:
+            return row.encode("utf-8", "replace")
+        end = start + len(row)
+        # A selected newline belongs to no row, so mark it with a trailing
+        # block; without it a selection over blank lines would be invisible.
+        tail = b""
+        if span[0] <= end < span[1] and self.editor.text[end:end + 1] == "\n":
+            tail = _REVERSE + b" " + _RESET
+        a = max(span[0] - start, 0)
+        b = min(span[1] - start, len(row))
+        if b <= a:
+            return row.encode("utf-8", "replace") + tail
+        return (row[:a].encode("utf-8", "replace")
+                + _REVERSE + row[a:b].encode("utf-8", "replace") + _RESET
+                + row[b:].encode("utf-8", "replace") + tail)
 
     def _content_lines(self) -> list[bytes]:
         lines: list[bytes] = []
@@ -284,7 +310,7 @@ class AiPanel:
         label = f" ludvart · {self.provider} " if self.provider else " ludvart "
         if self.thinking:
             label += f"· {self.activity} "
-        hints = "^O/Esc:close  M-Enter:newline  ^G Up/Dn:resize  PgUp/Dn:scroll "
+        hints = "^O/Esc:close  M-Enter:newline  S-arrows:select  PgUp/Dn:scroll "
         if more_above > 0:
             hints = f"\u2191{more_above} more  " + hints
         text = (label + "· " + hints)[: self.cols].ljust(self.cols)
@@ -307,7 +333,7 @@ class AiPanel:
             visible = self._input_view()[0]
             return [badge + _CYAN + _PROMPT.encode("ascii") + _RESET
                     + visible.encode("utf-8", "replace") + _EOL]
-        rows = self._input_block()[0]
+        rows, _, _, starts = self._input_block()
         out = []
         for i, row in enumerate(rows):
             if i == 0:
@@ -316,7 +342,7 @@ class AiPanel:
                 # Continuations line up under the first row's text so a pasted
                 # block reads as one thing rather than a stack of prompts.
                 head = b" " * (len(prefix) + len(_PROMPT))
-            out.append(head + row.encode("utf-8", "replace") + _EOL)
+            out.append(head + self._highlight(row, starts[i]) + _EOL)
         return out
 
     def render(self, height: int, cols: int) -> list[bytes]:

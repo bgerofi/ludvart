@@ -105,6 +105,63 @@ def test_a_multiline_question_reaches_the_llm_intact():
     print("multiline question reaches the llm intact: OK")
 
 
+def test_every_shifted_arrow_extends_the_selection():
+    """Check each binding on its own.
+
+    A table of near-identical escape sequences is exactly where a typo survives
+    a test that only exercises one of them, so every sequence gets its own case.
+    Both the xterm and the older rxvt forms are bound, since which one arrives
+    depends on the terminal rather than on ludvart.
+    """
+    # "ab\ncd": a=0 b=1 \n=2 c=3 d=4
+    cases = [
+        (b"\x1b[1;2D", 5, "d"),      # Shift-Left
+        (b"\x1b[d",    5, "d"),
+        (b"\x1b[1;2C", 0, "a"),      # Shift-Right
+        (b"\x1b[c",    0, "a"),
+        (b"\x1b[1;2A", 4, "b\nc"),   # Shift-Up
+        (b"\x1b[a",    4, "b\nc"),
+        (b"\x1b[1;2B", 1, "b\nc"),   # Shift-Down
+        (b"\x1b[b",    1, "b\nc"),
+        (b"\x1b[1;2H", 5, "cd"),     # Shift-Home
+        (b"\x1b[1;2~", 5, "cd"),
+        (b"\x1b[7$",   5, "cd"),
+        (b"\x1b[1;2F", 3, "cd"),     # Shift-End
+        (b"\x1b[4;2~", 3, "cd"),
+        (b"\x1b[8$",   3, "cd"),
+    ]
+    for key, start, want in cases:
+        r = make_ludvart()
+        r._panel.editor.set_text("ab\ncd")
+        r._panel.editor.cursor = start
+        r._panel_input(key)
+        got = r._panel.editor.selected_text()
+        assert got == want, (key, got, want)
+    print("every shifted arrow extends the selection: OK")
+
+
+def test_shift_arrows_select_a_block_that_one_key_then_deletes():
+    """Selecting a pasted block and dropping it should not be a Backspace vigil."""
+    for up, home in ((b"\x1b[1;2A", b"\x1b[1;2H"), (b"\x1b[a", b"\x1b[7$")):
+        r = make_ludvart()
+        r._panel_input(_PASTE_START + b"keep me\nline one\nline two" + _PASTE_END)
+        r._panel_input(up)    # from the end of the last line to the one above
+        r._panel_input(home)  # ...and back to its start
+        assert r._panel.editor.selected_text() == "line one\nline two", (
+            r._panel.editor.selected_text())
+        r._panel_input(b"\x7f")  # Backspace
+        assert r._panel.editor.text == "keep me\n", r._panel.editor.text
+
+    # A shifted arrow at the top of the input selects rather than scrolling:
+    # the user is selecting, not navigating.
+    r = make_ludvart()
+    r._panel.scroll = 0
+    r._panel_input(b"one")
+    r._panel_input(b"\x1b[1;2A")
+    assert r._panel.scroll == 0 and r._panel.editor.selection() is None
+    print("shift arrows select a block: OK")
+
+
 if __name__ == "__main__":
     test_paste_single_read()
     test_paste_with_newline_no_submit()
@@ -112,4 +169,6 @@ if __name__ == "__main__":
     test_prefix_before_paste()
     test_enter_submits_but_alt_enter_opens_a_line()
     test_a_multiline_question_reaches_the_llm_intact()
+    test_every_shifted_arrow_extends_the_selection()
+    test_shift_arrows_select_a_block_that_one_key_then_deletes()
     print("all paste tests passed")

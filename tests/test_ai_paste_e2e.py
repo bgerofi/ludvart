@@ -62,6 +62,22 @@ def input_block(screen):
     return []
 
 
+def reversed_text(screen):
+    """The characters drawn in reverse video within the input block.
+
+    The panel header is reverse video too, so the scan starts at the input row.
+    """
+    rows = [r.rstrip() for r in screen.display]
+    top = next((i for i, r in enumerate(rows) if "ludvart>" in r), len(rows))
+    out = []
+    for y in range(top, screen.lines):
+        line = screen.buffer[y]
+        out.append("".join(
+            line[x].data for x in range(screen.columns) if line[x].reverse
+        ).rstrip())
+    return "".join(out)
+
+
 def main():
     pid, m = pty.fork()
     if pid == 0:
@@ -132,6 +148,27 @@ def main():
     expect_block(
         "Ctrl-K clears the line the cursor is on and leaves the rest",
         ["ludvart>", "Z", "thirdtext"],
+    )
+
+    # 6. Shift-Down/Shift-End select a block, reverse-video shows it, and one
+    # Backspace removes it. pyte tracks the attribute per cell, so this is the
+    # real screen state and not just the bytes we hoped we wrote.
+    for _ in range(2):
+        os.write(m, b"\x1b[1;2B")  # Shift-Down
+        pump(m, stream, 0.2)
+    os.write(m, b"\x1b[1;2F")  # Shift-End
+    pump(m, stream, 0.4)
+    checks.add(
+        "the selected block is drawn in reverse video",
+        reversed_text(screen) == "Zthirdtext",
+        f"reversed cells read {reversed_text(screen)!r}",
+    )
+    os.write(m, b"\x7f")  # Backspace
+    expect_block("Backspace deletes the whole selected block", ["ludvart>"])
+    checks.add(
+        "nothing is left highlighted once the block is gone",
+        reversed_text(screen) == "",
+        f"reversed cells read {reversed_text(screen)!r}",
     )
 
     os.write(m, b"\x0f")  # close panel
