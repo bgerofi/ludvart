@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
 
-VER = "0.4.4"
+VER = "0.4.5"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -52,12 +52,6 @@ Exit codes:
 Any write first copies the target to PATH.ludvart.bak, and a written .py file is
 compile-checked (meta pycheck=ok or pycheck=FAILED).
 
-Argument order: every subcommand that takes a path takes it as the first
-argument -- except search, whose first argument is the PATTERN and whose path is
---path. That one exception is worth remembering; a search written the other way
-round is accepted, but only because it can be worked out, not because it is the
-syntax.
-
 Size limit: the helper is reached by typing a command line into the terminal,
 and that channel carries only about 2 KB per call -- a longer one is liable to
 arrive empty or cut short, which the shell will then run as something other than
@@ -68,6 +62,18 @@ replace-range or structured-patch rather than rewriting the whole of it.
 
 Subcommands
 -----------
+At a glance -- the path comes first everywhere except search, which takes the
+pattern first and names its path with --path:
+    read              PATH     [--start N] [--end M]
+    write             PATH     --b64 DATA
+    append            PATH     --b64 DATA
+    replace           PATH     --old-b64 A --new-b64 B [--expect-count K]
+    replace-range     PATH     --start N --end M --b64 DATA
+    structured-patch  PATH     --b64 JSON
+    search            PATTERN  [--path P] [--glob G]
+    run                        --b64 CMD
+    info / spec                (no arguments)
+
 read PATH [--start N] [--end M]
     Payload is the file, or the 1-indexed inclusive line range N..M.
     Meta: path=, lines=<total in file>, range=<A-B or all>.

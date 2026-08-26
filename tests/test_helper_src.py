@@ -242,12 +242,26 @@ def test_search_survives_its_arguments_arriving_backwards():
 
 
 def test_the_spec_names_the_one_subcommand_that_breaks_the_pattern():
-    """The rule only helps if the exception to it is stated with it."""
-    order = LUDVART_HELPER_SPEC.split("Argument order:", 1)
-    assert len(order) == 2, "the spec no longer states the argument-order rule"
-    rule = order[1].split("\n\n", 1)[0]
-    assert "except search" in rule, rule
-    print("the spec names the argument-order exception: OK")
+    """Six subcommands demonstrate "path first" and one contradicts it.
+
+    Stating the exception forty lines below where the pattern was set loses to
+    the pattern: a rule shown six times beats a rule said once. The synopsis
+    puts them side by side in a fixed column, so the odd one out is seen rather
+    than remembered.
+    """
+    body = LUDVART_HELPER_SPEC.split("At a glance", 1)[1].split("\n\n", 1)[0]
+    columns = {}
+    for line in body.splitlines():
+        m = re.match(r"^    (\S+)\s+(PATH|PATTERN)\b", line)
+        if m:
+            columns[m.group(1)] = (m.group(2), line.index(m.group(2)))
+    assert columns.get("search", (None,))[0] == "PATTERN", columns
+    others = [v for k, v in columns.items() if k != "search"]
+    assert len(others) >= 6, columns
+    assert {v[0] for v in others} == {"PATH"}, columns
+    assert len({v[1] for v in columns.values()}) == 1, \
+        "the synopsis only shows the exception if the column lines up"
+    print("the synopsis shows the argument-order exception: OK")
 
 
 def test_command_is_quote_safe():

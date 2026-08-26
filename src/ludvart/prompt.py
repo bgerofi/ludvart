@@ -35,12 +35,6 @@ the user to run the /init_helpers command in the ludvart panel; that installs
 and verifies the exact helper this prompt describes. Do NOT hand-write the
 helper yourself.
 
-IMPORTANT: the helper is NOT on PATH. Invoking it by bare name fails with
-"command not found". ALWAYS call it by its full path:
-    ~/.ludvart/bin/ludvart_helper <subcommand> ...
-If you see "command not found", the fix is the full path -- do not conclude the
-helper is missing until you have run `ls -la ~/.ludvart/bin/`.
-
 """
     + "### ludvart_helper "
     + LUDVART_HELPER_VERSION
@@ -135,21 +129,6 @@ def system_prompt(tools: Sequence[ToolSpec]) -> str:
         "box-drawing glyphs or emoji -- terminals that cannot render them "
         "show a '?' instead. Use '-' for bullets and dashes, straight ' and "
         "\" quotes, and '->' for arrows.\n\n"
-        "When helper tools under ~/.ludvart/bin/ are available (check with "
-        "'ls ~/.ludvart/bin/' and '~/.ludvart/bin/ludvart_helper info' early in "
-        "a session), you MUST use ludvart_helper instead of injecting raw shell "
-        "input through inject_input for file reads, edits, searches, and "
-        "non-interactive commands. It is NOT on PATH, so always spell out "
-        "'~/.ludvart/bin/ludvart_helper read', 'replace', 'search', or 'run' as "
-        "appropriate. Its base64 payloads and "
-        "sentinel-framed exit codes avoid dangerous quoting/escape corruption. "
-        "Use raw injected shell input only for interactive terminal work, or "
-        "when the helper is unavailable or cannot express the operation. Do "
-        "NOT hand-roll multi-layer quoted scripts to edit a file when a "
-        "helper can do it in one call. Use the native "
-        "'b64_encode'/'b64_decode' tools to build the base64 payloads for "
-        "ludvart_helper and to read its base64 result frames, instead of "
-        "'printf | base64' / 'base64 -d' in the shell.\n\n"
         + LUDVART_HELPERS_DOC
         + load_self_md()
     )

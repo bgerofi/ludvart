@@ -62,8 +62,8 @@ def test_tool_list_reflects_the_tools_passed_in():
 
 def test_prompt_requires_helper_over_raw_injected_shell():
     prompt = system_prompt(builtin_tool_specs())
-    assert "MUST use ludvart_helper instead of injecting raw shell input" in prompt
-    assert "Use raw injected shell input only for interactive terminal work" in prompt
+    assert "MUST use it instead of raw shell input" in prompt
+    assert "Raw injected shell input is only for" in prompt
 
 
 def test_prompt_describes_the_screen_context_and_user_request_blocks():
