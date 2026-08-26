@@ -171,6 +171,24 @@ def main():
         f"reversed cells read {reversed_text(screen)!r}",
     )
 
+    # 7. Ctrl-Space sets a mark, so plain arrows select on terminals that never
+    # report a modifier at all.
+    os.write(m, b"abc")
+    pump(m, stream, 0.3)
+    os.write(m, b"\x00")       # Ctrl-Space
+    pump(m, stream, 0.3)
+    for _ in range(2):
+        os.write(m, b"\x1b[D")  # plain Left
+        pump(m, stream, 0.2)
+    pump(m, stream, 0.3)
+    checks.add(
+        "a mark makes plain arrows select",
+        reversed_text(screen) == "bc",
+        f"reversed cells read {reversed_text(screen)!r}",
+    )
+    os.write(m, b"\x7f")
+    expect_block("the marked block deletes like any other", ["ludvart> a"])
+
     os.write(m, b"\x0f")  # close panel
     time.sleep(0.2)
     os.write(m, b"\x03")

@@ -310,7 +310,9 @@ class AiPanel:
         label = f" ludvart · {self.provider} " if self.provider else " ludvart "
         if self.thinking:
             label += f"· {self.activity} "
-        hints = "^O/Esc:close  M-Enter:newline  S-arrows:select  PgUp/Dn:scroll "
+        hints = "^O/Esc:close  M-Enter:newline  S-arrows/^Space:select  PgUp/Dn:scroll "
+        if self.editor.mark:
+            hints = "MARK - move to select, ^Space cancels  "
         if more_above > 0:
             hints = f"\u2191{more_above} more  " + hints
         text = (label + "· " + hints)[: self.cols].ljust(self.cols)

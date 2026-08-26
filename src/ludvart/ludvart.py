@@ -1361,11 +1361,13 @@ class Ludvart:
         elif key in (b"\x1b[D", b"\x1bOD"):  # Left
             editor.left()
         elif key in (b"\x1b[A", b"\x1bOA"):  # Up -> within the input, else scroll
-            if not editor.up():
+            if not editor.up() and not editor.mark:
                 panel.scroll_up(1)
         elif key in (b"\x1b[B", b"\x1bOB"):  # Down -> within the input, else scroll
-            if not editor.down():
+            if not editor.down() and not editor.mark:
                 panel.scroll_down(1)
+        elif key in (b"\x00", b"\x1b[32;2u"):  # Ctrl-Space -> set/clear the mark
+            editor.toggle_mark()
         # Shift-arrows extend a selection, as they do in every GUI editor. A
         # shifted Up/Down at the edge of the input does not fall through to
         # scrolling the transcript: the user is selecting, not navigating.

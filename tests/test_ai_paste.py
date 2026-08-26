@@ -162,6 +162,53 @@ def test_shift_arrows_select_a_block_that_one_key_then_deletes():
     print("shift arrows select a block: OK")
 
 
+def test_the_mark_lets_plain_arrows_select():
+    """Not every terminal reports a modifier, and a shifted arrow then arrives
+    as a plain one; without a mark those users could not select at all."""
+    r = make_ludvart()
+    r._panel.scroll = 3
+    r._panel_input(_PASTE_START + b"keep me\nline one\nline two" + _PASTE_END)
+    r._panel_input(b"\x00")  # Ctrl-Space sets the mark
+    assert r._panel.editor.mark
+    assert b"MARK" in r._panel._header(0)
+
+    r._panel_input(b"\x1b[A")  # a *plain* Up now extends the selection
+    r._panel_input(b"\x1b[H")  # ...and a plain Home too
+    assert r._panel.editor.selected_text() == "line one\nline two", (
+        r._panel.editor.selected_text())
+    r._panel_input(b"\x7f")
+    assert r._panel.editor.text == "keep me\n", r._panel.editor.text
+    # Deleting the block leaves the mark off, so movement is movement again.
+    assert not r._panel.editor.mark
+    assert b"MARK" not in r._panel._header(0)
+    r._panel_input(b"\x1b[A")
+    assert r._panel.editor.selection() is None
+
+    # Repeated movement keeps extending: the mark holds the selection open, so
+    # a plain arrow must not take the branch that collapses it to its edge.
+    r._panel.editor.set_text("abcd")
+    r._panel_input(b"\x00")
+    for _ in range(3):
+        r._panel_input(b"\x1b[D")
+    assert r._panel.editor.selected_text() == "bcd", r._panel.editor.selected_text()
+    r._panel_input(b"\x1b[C")
+    assert r._panel.editor.selected_text() == "cd", r._panel.editor.selected_text()
+    r._panel_input(b"\x00")  # cancel the mark again
+
+    # Ctrl-Space toggles, and a marked Up at the top selects rather than
+    # scrolling the transcript away under the user.
+    r._panel_input(b"\x00")
+    assert r._panel.editor.mark
+    r._panel_input(b"\x00")
+    assert not r._panel.editor.mark and r._panel.editor.selection() is None
+    r._panel.scroll = 0
+    r._panel.editor.set_text("solo")
+    r._panel_input(b"\x00")
+    r._panel_input(b"\x1b[A")
+    assert r._panel.scroll == 0, r._panel.scroll
+    print("the mark lets plain arrows select: OK")
+
+
 if __name__ == "__main__":
     test_paste_single_read()
     test_paste_with_newline_no_submit()
@@ -171,4 +218,5 @@ if __name__ == "__main__":
     test_a_multiline_question_reaches_the_llm_intact()
     test_every_shifted_arrow_extends_the_selection()
     test_shift_arrows_select_a_block_that_one_key_then_deletes()
+    test_the_mark_lets_plain_arrows_select()
     print("all paste tests passed")

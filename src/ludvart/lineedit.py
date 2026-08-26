@@ -29,8 +29,20 @@ class LineEditor:
         self.text = text
         self.cursor = len(text)
         self.anchor: int | None = None
+        self.mark = False
 
     # -- selection -----------------------------------------------------------
+
+    def toggle_mark(self) -> bool:
+        """Turn a sticky selection anchor on or off; True if it is now on.
+
+        Plenty of terminals never report a modifier, so a shifted arrow reaches
+        us as a plain one and selecting would be impossible. With the mark set,
+        ordinary movement extends the selection instead.
+        """
+        self.mark = not self.mark
+        self.anchor = self.cursor if self.mark else None
+        return self.mark
 
     def selection(self) -> tuple[int, int] | None:
         """The selected range as (start, end) offsets, or None if empty."""
@@ -46,6 +58,7 @@ class LineEditor:
         """Remove the selected range; False if there was nothing selected."""
         span = self.selection()
         self.anchor = None
+        self.mark = False
         if span is None:
             return False
         self.text = self.text[: span[0]] + self.text[span[1] :]
@@ -54,7 +67,7 @@ class LineEditor:
 
     def _mark(self, select: bool) -> None:
         """Start, keep or drop the anchor ahead of a cursor move."""
-        if not select:
+        if not (select or self.mark):
             self.anchor = None
         elif self.anchor is None:
             self.anchor = self.cursor
@@ -154,7 +167,7 @@ class LineEditor:
     def left(self, select: bool = False) -> None:
         span = self.selection()
         self._mark(select)
-        if span is not None and not select:
+        if span is not None and not (select or self.mark):
             self.cursor = span[0]  # an unshifted arrow collapses the selection
         elif self.cursor > 0:
             self.cursor -= 1
@@ -162,7 +175,7 @@ class LineEditor:
     def right(self, select: bool = False) -> None:
         span = self.selection()
         self._mark(select)
-        if span is not None and not select:
+        if span is not None and not (select or self.mark):
             self.cursor = span[1]
         elif self.cursor < len(self.text):
             self.cursor += 1
@@ -188,11 +201,13 @@ class LineEditor:
         self.text = text
         self.cursor = len(text)
         self.anchor = None
+        self.mark = False
 
     def clear(self) -> None:
         self.text = ""
         self.cursor = 0
         self.anchor = None
+        self.mark = False
 
     def take(self) -> str:
         """Return the trimmed text and reset the buffer to empty."""

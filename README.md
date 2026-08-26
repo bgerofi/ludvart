@@ -118,7 +118,9 @@ Inside the panel:
   Alt-Enter starts a new line, a paste keeps the newlines it came with, and
   Up/Down move within the input before they scroll the transcript. Shift with
   any arrow (or Home/End) extends a selection, shown in reverse video; typing
-  or Backspace then replaces or deletes the whole block.
+  or Backspace then replaces or deletes the whole block. Some terminals never
+  report Shift, so Ctrl-Space sets a mark that makes plain movement select
+  instead; press it again to cancel.
 - **Up / Down** scroll the conversation; **PageUp / PageDown** scroll by a page.
 - **Ctrl-G Up / Down** grow or shrink the panel one row; **Ctrl-G PageUp** snaps
   it to half the screen and **Ctrl-G PageDown** restores the previous height.
