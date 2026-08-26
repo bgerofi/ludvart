@@ -302,6 +302,11 @@ class Ludvart:
     #: in the normal (shell/REPL) case.
     SETTLE_MAX_WAIT = 20.0
 
+    #: Budget (seconds) set aside for one out-of-band status check. The check is
+    #: an LLM round-trip and cannot be interrupted once sent, so the cap above is
+    #: only honoured if we refuse to start a check we have no room for.
+    SETTLE_CHECK_RESERVE = 6.0
+
     #: Bytes per write, and the pause between writes, when feeding the pty a
     #: large block. An unpaced burst outruns the tty's input buffer and the
     #: dropped characters are silent.
@@ -402,6 +407,9 @@ class Ludvart:
         self._steer_pending: str | None = None
         self._steer_user_echo: str | None = None
         self._ask_root_question = ""
+        # Prompt learned before the first chunk of a command line that is being
+        # typed across several injections (see _injection_prompt_prefix).
+        self._partial_line_prompt: str | None = None
         # Approval gate for LLM-triggered inject_input calls.
         self._inject_approval_all = False
         self._inject_approval_pending = False
@@ -2029,7 +2037,7 @@ class Ludvart:
             data += b"\r"
         if not data:
             return "[ludvart] inject_input: nothing to inject (empty 'text')."
-        prompt_prefix = self._current_prompt_prefix()
+        prompt_prefix = self._injection_prompt_prefix(data.endswith((b"\r", b"\n")))
         try:
             self._write_all(self._master_fd, data)
         except OSError as exc:
@@ -2118,6 +2126,29 @@ class Ludvart:
         except Exception:
             return ""
 
+    def _injection_prompt_prefix(self, submits: bool) -> str:
+        """The prompt to watch for once this injection has been executed.
+
+        A command line too long for one call is typed by several injections, and
+        only the last of them submits. By the time that one arrives the cursor
+        line is the prompt plus a half-typed command, so a prefix learned then
+        could never match the bare prompt that comes back when the command
+        finishes -- leaving the cheap fast path dead for exactly the longest
+        commands, which are also the ones worth not waiting on. Hold on to the
+        prefix learned before the first chunk and drop it once a line has been
+        submitted.
+
+        A sequence abandoned half-way (the user hits Ctrl-C) leaves a prefix that
+        is simply the earlier prompt, which normally still matches; when it does
+        not, the settle wait falls back to quiescence exactly as it did before.
+        """
+        if self._partial_line_prompt is None:
+            self._partial_line_prompt = self._current_prompt_prefix()
+        prefix = self._partial_line_prompt
+        if submits:
+            self._partial_line_prompt = None
+        return prefix
+
     def _prompt_returned(self, prompt_prefix: str) -> bool:
         """True when the learned prompt is back with nothing typed after it."""
         plen = len(prompt_prefix)
@@ -2201,6 +2232,11 @@ class Ludvart:
             if changed_once and (now - last_change) >= quiet_window:
                 if tui or self._backend_client is None:
                     return text
+                # An LLM round-trip cannot be called back once sent, so starting
+                # one with no room left is what turns the cap into a suggestion.
+                # Out of budget means out of time: report what is on screen.
+                if now + self.SETTLE_CHECK_RESERVE > deadline:
+                    return text
                 if self._injection_finished(injected, text, before_text):
                     return text
                 last_change = now  # really still running; back off
@@ -2268,7 +2304,8 @@ class Ludvart:
         }
         try:
             reply = self._backend_client.backend_request(
-                "complete", {"messages": [system, user], "max_tokens": 8}
+                "complete",
+                {"messages": [system, user], "max_tokens": 8, "max_retries": 0},
             )
         except Exception:
             return True  # never hang the tool on a status-check failure

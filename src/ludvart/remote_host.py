@@ -76,6 +76,14 @@ class RemoteTerminalHost(TerminalHost):
         result = None
         llm = self.llm_provider() if self.llm_provider is not None else None
         if method == "complete" and llm is not None:
+            # A caller may ask for fewer retries than a conversational turn gets
+            # (the settle detector does: it is only asking whether to keep
+            # waiting, so a failed attempt is an answer, not something to sit
+            # through again). Nothing else can be using the client -- we are
+            # blocked serving the request this call is nested inside.
+            prior = llm.max_retries
+            if params.get("max_retries") is not None:
+                llm.max_retries = max(0, int(params["max_retries"]))
             try:
                 result = llm.complete(
                     list(params.get("messages") or []),
@@ -83,6 +91,8 @@ class RemoteTerminalHost(TerminalHost):
                 )
             except Exception:  # noqa: BLE001 - the caller decides what to do
                 result = None
+            finally:
+                llm.max_retries = prior
         self._channel.send(
             message(
                 MsgType.BACKEND_RESPONSE,
