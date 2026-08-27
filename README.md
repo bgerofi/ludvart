@@ -73,6 +73,21 @@ Copilot** backend. To start ludvart, type:
 ludvart
 ```
 
+The first run walks you through registering a model — see
+[LLM configuration](#llm-configuration). After that, press **Ctrl-O** to open
+the AI panel and run:
+
+```
+/init_helpers
+```
+
+This installs `ludvart_helper` on the machine you are currently driving. The
+agent's higher-level abilities — reliable file read/edit/search, patching,
+running commands with a real exit code — are built on it and are *not*
+available until it is installed. Because ludvart travels with your session,
+run `/init_helpers` again on the far side of an `ssh` hop the first time you
+want those abilities there. See [Assistant helpers](#assistant-helpers).
+
 ## LLM configuration
 
 ludvart keeps every model you register in `~/.ludvart/models.json` — an array of
@@ -113,30 +128,20 @@ nested sessions.
 Inside the panel:
 
 - Type your request and press **Enter** to send it; **Esc** or **Ctrl-O** closes
-  the panel. The input line is a full editor — arrow keys, Home/End, Ctrl-A/E,
-  Ctrl-U/K/W, and mouse (bracketed) paste all work. The input is multi-line:
-  Alt-Enter starts a new line, a paste keeps the newlines it came with, and
-  Up/Down move within the input before they scroll the transcript. Shift with
-  any arrow (or Home/End) extends a selection, shown in reverse video; typing
-  or Backspace then replaces or deletes the whole block. Some terminals never
-  report Shift, so Ctrl-Space sets a mark that makes plain movement select
-  instead; press it again to cancel. (PuTTY drops the modifier by default: set
-  Terminal -> Keyboard -> "Shift/Ctrl/Alt with the arrow keys" to "xterm-style
-  bitmap" to get the shifted arrows themselves.)
-- **Up / Down** scroll the conversation; **PageUp / PageDown** scroll by a page.
-- **Ctrl-G Up / Down** grow or shrink the panel one row; **Ctrl-G PageUp** snaps
-  it to half the screen and **Ctrl-G PageDown** restores the previous height.
-
-### Prefix commands
-
-Press the prefix key (default **Ctrl-G**), then a command letter:
-
-- `Ctrl-G` `a` — open the AI panel (same as Ctrl-O)
-- `Ctrl-G` `s` — open the scrollback viewer
-- `Ctrl-G` `o` — send a literal Ctrl-O byte to the program underneath
-- `Ctrl-G` `Ctrl-G` — send a literal prefix byte to the program underneath
-
-Change the prefix with `--prefix` (e.g. `ludvart --prefix ctrl-o`).
+  the panel.
+- The input is a full editor: arrow keys, Home/End, Ctrl-A/E, Ctrl-U/K/W, and
+  mouse (bracketed) paste all work.
+- **The input is multi-line.** **Alt-Enter** opens a new line, a paste keeps the
+  newlines it came with, and Up/Down move within the input before they scroll
+  the transcript — so a pasted code snippet or log excerpt keeps its shape.
+- **Shift with any arrow** (or Shift-Home / Shift-End) extends a selection,
+  shown in reverse video; typing or Backspace then replaces or deletes the whole
+  block. Some terminals never report Shift, so **Ctrl-Space** sets a mark that
+  makes plain movement select instead; press it again to cancel. (PuTTY drops
+  the modifier by default: set Terminal -> Keyboard -> "Shift/Ctrl/Alt with the
+  arrow keys" to "xterm-style bitmap" to get the shifted arrows themselves.)
+- **PageUp / PageDown** scroll the conversation by a page; Up/Down scroll it a
+  line at a time once the cursor is at the edge of the input.
 
 ## Assistant tools
 
@@ -206,11 +211,12 @@ sentinel-framed with a real exit code, so edits are immune to quoting, newline,
 and escape corruption, and success is read from a reliable status rather than
 guessed from screen text.
 
-You can install or repair it at any time with the `/init_helpers` panel command.
-This is deterministic and does *not* involve the model: ludvart injects a short,
-self-contained shell command that compares the on-disk copy against the bundled
-version by checksum and rewrites it only if it is missing, outdated, or
-modified.
+You install or repair it with the `/init_helpers` panel command, which you run
+once per machine before the agent's file work is available (see
+[Getting Started](#getting-started)). This is deterministic and does *not*
+involve the model: ludvart injects a short, self-contained shell command that
+compares the on-disk copy against the bundled version by checksum and rewrites
+it only if it is missing, outdated, or modified.
 
 ### Tools vs. helpers
 
