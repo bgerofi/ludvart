@@ -40,6 +40,7 @@ from .helper_src import (
     LUDVART_HELPER_SOURCE,
     LUDVART_HELPER_VERSION,
     helper_install_command,
+    helper_probe_command,
 )
 from .session import (
     SLASH_COMMAND_HELP,
@@ -316,6 +317,11 @@ class Ludvart:
     #: Cap (seconds) on waiting for the helper install to report its result.
     HELPER_INIT_MAX_WAIT = 90.0
 
+    #: Cap (seconds) on the checksum probe that runs before the install. Short:
+    #: it is one small command, and an unanswered probe just means we transfer
+    #: the payload as before.
+    HELPER_PROBE_MAX_WAIT = 20.0
+
     #: Terminal liveness (see :class:`TerminalLiveness`). After LIVENESS_IDLE
     #: seconds without a keystroke the terminal is asked whether it is still
     #: there; a live one answers well within LIVENESS_REPLY_WAIT, and only
@@ -334,6 +340,10 @@ class Ludvart:
         r"LUDVART_HELPER_INIT status=(installed|current) version=(\S+) "
         r"ok=([01]) reason=(\w+)"
     )
+
+    #: The probe result line. Matching a real digest (or ``-``) rather than the
+    #: template's ``%s`` keeps the echoed command from answering itself.
+    _HELPER_PROBE_RE = re.compile(r"LUDVART_HELPER_HAVE md5=([0-9a-f]{32}|-)")
 
     #: A full-screen (alternate-buffer) app -- vim, less, htop, screen, tmux --
     #: has no learnable shell prompt and may repaint a status line/clock forever,
@@ -1569,13 +1579,21 @@ class Ludvart:
         existing file) and rewrites it from an embedded base64 payload only when
         it is missing, outdated, or modified. The command relies solely on the
         foreground host's own python3/HOME, so it also works over ssh.
+
+        A short checksum probe runs first so an up-to-date host is spared the
+        payload, which can only get there by being typed at its shell.
         """
         panel = self._panel
         if panel is None:
             return
-        command = helper_install_command()
 
         def worker() -> str:
+            if self._helper_is_current():
+                return (
+                    f"ludvart_helper is already up to date "
+                    f"(v{LUDVART_HELPER_VERSION}, checksum verified)."
+                )
+            command = helper_install_command()
             self._write_paced(self._master_fd, command.replace("\n", "\r").encode("utf-8") + b"\r")
             return self._parse_helper_init(self._wait_for_helper_init())
 
@@ -1584,6 +1602,20 @@ class Ludvart:
             info=f"Installing/verifying ludvart_helper v{LUDVART_HELPER_VERSION}\u2026",
             activity="Installing ludvart_helper",
         )
+
+    def _helper_is_current(self) -> bool:
+        """Ask the foreground host whether its helper already matches the golden copy.
+
+        An unanswered or unreadable probe reports False, so a host we cannot
+        question still gets the install (which does its own md5 check).
+        """
+        self._write_paced(
+            self._master_fd, helper_probe_command().encode("utf-8") + b"\r"
+        )
+        found = self._HELPER_PROBE_RE.search(
+            self._wait_for_marker(self._HELPER_PROBE_RE, self.HELPER_PROBE_MAX_WAIT)
+        )
+        return found is not None and found.group(1) == LUDVART_HELPER_MD5
 
     def _write_paced(self, fd: int, data: bytes) -> None:
         """Feed the pty in small bursts so its input buffer can keep up.
@@ -1596,15 +1628,19 @@ class Ludvart:
             time.sleep(self.INJECT_CHUNK_PAUSE)
 
     def _wait_for_helper_init(self) -> str:
-        """Poll the screen for the install result line.
+        """Poll the screen for the install result line."""
+        return self._wait_for_marker(self._HELPER_INIT_RE, self.HELPER_INIT_MAX_WAIT)
+
+    def _wait_for_marker(self, pattern: "re.Pattern[str]", timeout: float) -> str:
+        """Poll the screen until ``pattern`` appears, then return the snapshot.
 
         The install is many short commands, so the shell prompt returns between
         them and the generic settle heuristic would call it done after the first.
         """
-        deadline = time.time() + self.HELPER_INIT_MAX_WAIT
+        deadline = time.time() + timeout
         text = self._safe_snapshot() or ""
         while time.time() < deadline:
-            if self._HELPER_INIT_RE.search(text):
+            if pattern.search(text):
                 break
             time.sleep(self.SETTLE_POLL)
             text = self._safe_snapshot() or text

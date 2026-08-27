@@ -415,6 +415,31 @@ def _run(cmd, home):
                           capture_output=True, text=True)
 
 
+def test_probe_reports_the_installed_checksum():
+    """The probe is what lets an up-to-date host skip the 21 KB transfer."""
+    from ludvart.helper_src import helper_probe_command
+
+    probe = helper_probe_command()
+    assert "\n" not in probe, "the probe must be one short line"
+    assert probe.startswith("python3 -c '") and probe.endswith("'")
+    assert "'" not in probe[len("python3 -c '"):-1]
+    with tempfile.TemporaryDirectory() as home:
+        out = _run(probe, home).stdout
+        assert "LUDVART_HELPER_HAVE md5=-" in out, out
+
+        _run(helper_install_command(), home)
+        out = _run(probe, home).stdout
+        assert f"LUDVART_HELPER_HAVE md5={LUDVART_HELPER_MD5}" in out, out
+
+        dest = os.path.join(home, ".ludvart", "bin", "ludvart_helper")
+        with open(dest, "ab") as fh:
+            fh.write(b"\n# sneaky change\n")
+        out = _run(probe, home).stdout
+        assert "LUDVART_HELPER_HAVE md5=" in out, out
+        assert LUDVART_HELPER_MD5 not in out, out
+    print("the probe reports the installed checksum: OK")
+
+
 def test_install_current_and_repair():
     cmd = helper_install_command()
     with tempfile.TemporaryDirectory() as home:

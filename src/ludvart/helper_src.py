@@ -92,6 +92,29 @@ HELPER_CHUNK_CHARS = 512
 HELPER_STAGE_PATH = "~/.ludvart/bin/.ludvart_helper.b64"
 
 
+def helper_probe_command() -> str:
+    """Build a short command that reports the installed helper's md5.
+
+    The install payload only reaches the foreground host by being *typed* at its
+    shell, one paced chunk at a time, so sending it is slow and fills the screen
+    with base64. Asking first costs a single short line and lets an already
+    up-to-date host skip the transfer entirely. It prints::
+
+        LUDVART_HELPER_HAVE md5=<md5|->
+
+    ``-`` means no helper is installed. The literal ``%s`` in the template keeps
+    the command's own echo from being mistaken for the answer.
+    """
+    py = (
+        "import hashlib,os;"
+        'p=os.path.expanduser("~/.ludvart/bin/ludvart_helper");'
+        'print("LUDVART_HELPER_HAVE md5=%s"%('
+        'hashlib.md5(open(p,"rb").read()).hexdigest() '
+        'if os.path.isfile(p) else "-"))'
+    )
+    return "python3 -c '" + py + "'"
+
+
 def helper_install_command() -> str:
     """Build the shell commands that install/repair the helper.
 

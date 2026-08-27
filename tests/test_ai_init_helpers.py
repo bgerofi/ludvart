@@ -15,9 +15,12 @@ import time
 from ludvart.ludvart import Ludvart
 from ludvart.panel import AiPanel
 from ludvart.helper_src import (
+    LUDVART_HELPER_MD5,
     LUDVART_HELPER_SOURCE,
     LUDVART_HELPER_VERSION,
     helper_install_command,
+    helper_install_payload_b64,
+    helper_probe_command,
 )
 
 
@@ -54,6 +57,7 @@ def test_init_helpers_is_deterministic():
     written: list = []
     r._write_all = lambda fd, data: written.append(data)
     r.INJECT_CHUNK_PAUSE = 0
+    r._helper_is_current = lambda: False
     r._wait_for_helper_init = (
         lambda: "$ ...\n"
         f"LUDVART_HELPER_INIT status=installed version={LUDVART_HELPER_VERSION} "
@@ -83,6 +87,7 @@ def test_init_helpers_works_without_llm():
     r, actions, asks = make_ludvart(with_llm=False)
     r._write_all = lambda fd, data: None
     r.INJECT_CHUNK_PAUSE = 0
+    r._helper_is_current = lambda: False
     r._wait_for_helper_init = (
         lambda: f"LUDVART_HELPER_INIT status=current "
         f"version={LUDVART_HELPER_VERSION} ok=1 reason=match"
@@ -92,6 +97,82 @@ def test_init_helpers_works_without_llm():
     assert len(actions) == 1
     assert any("up to date" in t for k, t in r._panel.messages if k == "system")
     print("/init_helpers works without an LLM: OK")
+
+
+def test_an_up_to_date_helper_is_not_re_sent():
+    """The checksum must be checked *before* the payload is typed, not after.
+
+    The install can only reach the foreground host as base64 typed at its
+    shell, one paced chunk at a time. Deciding on disk -- as the install
+    command does on its own -- still pays that whole cost, so a host that
+    already has the right helper has to be asked first.
+    """
+    r, _, _ = make_ludvart(with_llm=True)
+    written: list = []
+    r._write_all = lambda fd, data: written.append(data)
+    r.INJECT_CHUNK_PAUSE = 0
+    r.SETTLE_POLL = 0.01
+    # The screen carries the command's own echo above the answer, and that echo
+    # contains the literal "md5=%s" template.
+    r._safe_snapshot = (
+        lambda: f"$ {helper_probe_command()}\n"
+        f"LUDVART_HELPER_HAVE md5={LUDVART_HELPER_MD5}\n$ "
+    )
+
+    submit(r, "/init_helpers")
+
+    sent = b"".join(written).decode()
+    assert sent == helper_probe_command() + "\r", sent
+    assert helper_install_payload_b64()[:64] not in sent, "the payload was re-sent"
+    assert any("up to date" in t for k, t in r._panel.messages if k == "system")
+    print("an up-to-date helper is not re-sent: OK")
+
+
+def test_a_stale_helper_is_still_installed():
+    r, _, _ = make_ludvart(with_llm=True)
+    written: list = []
+    r._write_all = lambda fd, data: written.append(data)
+    r.INJECT_CHUNK_PAUSE = 0
+    r.SETTLE_POLL = 0.01
+    r._safe_snapshot = lambda: "LUDVART_HELPER_HAVE md5=" + "0" * 32
+    r._wait_for_helper_init = (
+        lambda: f"LUDVART_HELPER_INIT status=installed "
+        f"version={LUDVART_HELPER_VERSION} ok=1 reason=stale_or_modified"
+    )
+
+    submit(r, "/init_helpers")
+
+    sent = b"".join(written).decode()
+    assert sent.startswith(helper_probe_command() + "\r"), sent
+    assert helper_install_payload_b64()[:64] in sent, "the payload was not sent"
+    assert any("reinstalled" in t for k, t in r._panel.messages if k == "system")
+    print("a stale helper is still installed: OK")
+
+
+def test_an_unanswered_probe_falls_back_to_installing():
+    """A host we cannot question must still get the helper.
+
+    Nothing answers the probe when python3 is missing or the foreground is not
+    a shell at all; treating that silence as "up to date" would quietly leave
+    the machine without a helper.
+    """
+    r, _, _ = make_ludvart(with_llm=True)
+    written: list = []
+    r._write_all = lambda fd, data: written.append(data)
+    r.INJECT_CHUNK_PAUSE = 0
+    r.SETTLE_POLL = 0.01
+    r.HELPER_PROBE_MAX_WAIT = 0.2
+    r._safe_snapshot = lambda: "$ "
+    r._wait_for_helper_init = (
+        lambda: f"LUDVART_HELPER_INIT status=installed "
+        f"version={LUDVART_HELPER_VERSION} ok=1 reason=missing"
+    )
+
+    submit(r, "/init_helpers")
+
+    sent = b"".join(written).decode()
+    assert helper_install_payload_b64()[:64] in sent, "a silent probe skipped the install"
+    print("an unanswered probe falls back to installing: OK")
 
 
 def test_the_wait_gives_up_instead_of_hanging():
@@ -177,6 +258,9 @@ def test_tab_completion_completes_a_subcommand():
 if __name__ == "__main__":
     test_init_helpers_is_deterministic()
     test_init_helpers_works_without_llm()
+    test_an_up_to_date_helper_is_not_re_sent()
+    test_a_stale_helper_is_still_installed()
+    test_an_unanswered_probe_falls_back_to_installing()
     test_the_wait_gives_up_instead_of_hanging()
     test_parse_helper_init_cases()
     test_autoinit_removed()
