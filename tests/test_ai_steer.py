@@ -172,6 +172,54 @@ def test_finish_ask_launches_pending_steer():
     print("pending steer starts only after the old worker finishes: OK")
 
 
+def test_a_steer_keeps_an_answer_that_arrived_first():
+    """Steering must not swallow a turn that had already answered.
+
+    The cancel flag is only noticed between agent steps, so a turn that
+    finished while the user was typing the correction still returns its answer,
+    and the backend has already persisted it. Dropping it left the panel
+    missing a reply the model believes it gave -- the user watched the summary
+    appear and then vanish.
+    """
+    runner = _make_ludvart()
+    _start_llm_request(runner)
+    runner._ask_root_question = "root request"
+    runner._steer_pending = "replacement request"
+    runner._steer_user_echo = "change direction"
+    runner._ask_result = "the original answer"
+    runner._ask_cancel.set()  # submitting a steer cancels the in-flight turn
+    calls = []
+
+    def fake_start_ask(question, **kwargs):
+        calls.append((question, kwargs, list(runner._panel.messages)))
+
+    runner._start_ask = fake_start_ask
+
+    runner._finish_ask()
+
+    assert len(calls) == 1, "the steered turn must still start"
+    # Delivered before the steered turn echoes the correction, so the panel
+    # reads in the order the conversation actually happened.
+    assert calls[0][2][-1] == ("ludvart", "the original answer"), calls[0][2]
+    assert runner._ask_result == "", "the answer must not be delivered twice"
+    print("a steer keeps an answer that arrived first: OK")
+
+
+def test_a_steer_that_interrupted_a_silent_turn_adds_nothing():
+    runner = _make_ludvart()
+    _start_llm_request(runner)
+    runner._steer_pending = "replacement request"
+    runner._steer_user_echo = "change direction"
+    runner._ask_result = ""  # the worker unwound before it produced anything
+    runner._ask_cancel.set()
+    runner._start_ask = lambda question, **kwargs: None
+
+    runner._finish_ask()
+
+    assert not [m for m in runner._panel.messages if m[0] == "ludvart"]
+    print("a steer that interrupted a silent turn adds nothing: OK")
+
+
 def test_finish_ask_completion_exits_steer_input():
     runner = _make_ludvart()
     runner._steer_saved_draft = "keep this"
@@ -250,6 +298,8 @@ def main():
     test_empty_steer_submit_continues_request()
     test_steer_submit_queues_reissue()
     test_finish_ask_launches_pending_steer()
+    test_a_steer_keeps_an_answer_that_arrived_first()
+    test_a_steer_that_interrupted_a_silent_turn_adds_nothing()
     test_finish_ask_completion_exits_steer_input()
     test_compose_steer_question_includes_required_context()
     test_repeated_steer_preserves_root_question()

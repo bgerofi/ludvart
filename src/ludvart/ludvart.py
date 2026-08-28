@@ -2023,6 +2023,13 @@ class Ludvart:
             panel.confirm_prompt = ""
             panel.thinking = False
             panel.interim = ""
+            # A turn that answered before it noticed the interruption is a
+            # finished turn, and the backend has already persisted that answer.
+            # Dropping it here would leave the panel showing a conversation the
+            # model does not have.
+            if self._ask_result:
+                self._deliver_reply(self._ask_result)
+                self._ask_result = ""
             self._start_ask(
                 pending,
                 user_echo=echo,
