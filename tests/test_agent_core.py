@@ -462,6 +462,31 @@ def test_past_snapshots_survive_a_resumed_session():
     print("past snapshots survive a resumed session: OK")
 
 
+def test_a_resumed_session_renders_with_a_live_trailing_block():
+    """A loaded history is rendered like any other: breadcrumbs plus one live screen.
+
+    The persisted log keeps every snapshot in full, so resuming and asking again
+    must collapse the loaded ones and put the *current* screen -- not the stale
+    one the session was saved with -- in the trailing block.
+    """
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([_text_turn("a")]), host, system_prompt="SYS")
+    core.run_turn("q1", "SCREEN-1")
+    saved_transcript, saved_history = core.transcript, core.history
+
+    llm = ScriptedLLM([_text_turn("b")])
+    resumed = AgentCore(llm, RecordingHost(), system_prompt="SYS")
+    resumed.resume(saved_transcript, saved_history)
+    resumed.run_turn("q2", "SCREEN-2")
+
+    sent = llm.seen_messages[0]
+    assert "SCREEN-1" not in str(sent)
+    stored = [m for m in sent[:-1] if m.get("role") == "user"]
+    assert len(stored) == 2 and all("SCREEN-2" not in m["content"] for m in stored)
+    assert "SCREEN-2" in sent[-1]["content"]
+    print("a resumed session renders with a live trailing block: OK")
+
+
 def test_compact_on_demand_ignores_the_threshold():
     host = RecordingHost()
     llm = ScriptedLLM([_text_turn("a"), _text_turn("BRIEF")])
@@ -563,6 +588,7 @@ def main():
     test_a_stripped_snapshot_is_fetched_back_by_timestamp()
     test_get_past_snapshot_rejects_an_unknown_timestamp()
     test_past_snapshots_survive_a_resumed_session()
+    test_a_resumed_session_renders_with_a_live_trailing_block()
     test_compact_on_demand_ignores_the_threshold()
     test_failed_turn_is_rolled_back_out_of_the_history()
     test_a_later_turn_after_a_failure_is_well_formed()
