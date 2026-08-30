@@ -150,10 +150,10 @@ def builtin_tool_specs() -> list[ToolSpec]:
             name="get_past_snapshot",
             description=(
                 "Return the exact terminal screen snapshot that was captured "
-                "at a previous turn, identified by its UTC timestamp. Each "
-                "user turn embeds a <screenContext ts=\"...\"> snapshot; once "
-                "superseded, older snapshots are removed from your context "
-                "and replaced by a breadcrumb line that keeps the timestamp "
+                "at a previous turn, identified by its UTC timestamp. Only the "
+                "live screen is shown in full, in a <screenContext ts=\"...\"> "
+                "block at the end of the conversation; every earlier snapshot "
+                "is replaced by a breadcrumb line that keeps its timestamp "
                 "(e.g. '[screen from <TS> omitted; queryable by "
                 "get_past_snapshot(<TS>)]'). Call this with that <TS> to get "
                 "the full snapshot back. Unlike capture_screen_history (which "

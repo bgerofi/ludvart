@@ -133,10 +133,10 @@ class AgentCore:
         self.maybe_compact()
         self.transcript.append(("you", question))
         # Stamp each snapshot with a UTC timestamp (nanosecond precision) so it
-        # can be addressed later. When older snapshots are stripped from the
-        # model-facing context (see :meth:`_strip_old_screenshots`) the
-        # timestamp survives in the breadcrumb, letting the model fetch the full
-        # snapshot back via the ``get_past_snapshot`` tool.
+        # can be addressed later. Snapshots are never sent where they are stored
+        # (see :meth:`_collapse_screenshots`); the timestamp survives in the
+        # breadcrumb, letting the model fetch the full snapshot back via the
+        # ``get_past_snapshot`` tool.
         snapshot_ts = self._utc_ns_timestamp()
         user_content = (
             f'<screenContext ts="{snapshot_ts}">\n'
@@ -348,9 +348,9 @@ class AgentCore:
             self.mcp.close()
             self.mcp = None
 
-    #: Appended to the most recent user turn at send time only. It is never
-    #: stored in ``self.history``, so it does not accumulate across turns and
-    #: is not written to the persisted session.
+    #: Carried in the trailing live block (see :meth:`_live_block`), never in
+    #: ``self.history``, so it does not accumulate across turns and is not
+    #: written to the persisted session.
     _TOOL_REMINDER = (
         "<reminder>If you are operating on a console/terminal, remember to use "
         "your ludvart helper tools (read, write, append, replace, replace-range, "
@@ -361,24 +361,29 @@ class AgentCore:
         "/init_helpers command in the ludvart panel.</reminder>"
     )
 
-    def _with_reminder(self, history: list[dict]) -> list[dict]:
-        """Return a shallow copy of ``history`` with the reminder appended.
+    #: Introduces the live screen inside the trailing block, so the model knows
+    #: this one is current and the breadcrumbs above it are not.
+    _LIVE_SCREEN_INTRO = (
+        "This is the terminal as it looks right now. It is the only live "
+        "screen in this conversation; the breadcrumbs above mark where older "
+        "snapshots were taken."
+    )
 
-        Only the last ``user`` message is touched, and only when its content is
-        plain text. The originals in :attr:`history` are left untouched.
+    @classmethod
+    def _live_block(cls, live: str) -> str:
+        """Build the single message that may differ between requests.
+
+        Everything that changes request to request -- the current screen and the
+        tool reminder -- is concentrated here, at the very end of the prompt.
+        Nothing before it is ever rewritten, so a provider's prompt cache keeps
+        matching the whole prefix instead of losing it to an edit in the middle.
         """
-        out = list(history)
-        for i in range(len(out) - 1, -1, -1):
-            msg = out[i]
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content")
-            if isinstance(content, str):
-                patched = dict(msg)
-                patched["content"] = content + "\n" + self._TOOL_REMINDER
-                out[i] = patched
-            break
-        return out
+        parts = []
+        if live:
+            parts.append(cls._LIVE_SCREEN_INTRO)
+            parts.append(live)
+        parts.append(cls._TOOL_REMINDER)
+        return "\n".join(parts)
 
     @staticmethod
     def _drop_unanswered_tool_calls(history: list[dict]) -> list[dict]:
@@ -423,12 +428,14 @@ class AgentCore:
     def _build_context(self) -> list[dict]:
         """Render the neutral history into the active provider's message shape.
 
-        Superseded screen snapshots are stripped first (see
-        :meth:`_strip_old_screenshots`) so only the newest ``<screenContext>``
-        is sent to the model.
+        Every stored snapshot is collapsed to a breadcrumb (see
+        :meth:`_collapse_screenshots`) and the newest one is re-attached as a
+        trailing block (see :meth:`_live_block`), so every message before that
+        block renders byte-identically on every later request.
         """
         history = self._drop_unanswered_tool_calls(self.history)
-        history = self._with_reminder(self._strip_old_screenshots(history))
+        history, live = self._collapse_screenshots(history)
+        history.append({"role": "user", "content": self._live_block(live)})
         build = getattr(self.llm, "build_context", None)
         if build is None:
             return history
@@ -458,13 +465,14 @@ class AgentCore:
 
     # -- past screen snapshots ------------------------------------------------
 
-    #: Breadcrumb that replaces the screen snapshot of superseded messages in
-    #: the model-facing context. Only the most recent snapshot keeps its full
-    #: <screenContext>; older ones are collapsed to a breadcrumb line to save
-    #: context (the live screen is re-fetchable via tools, and the exact past
-    #: snapshot via get_past_snapshot(timestamp)). The stored log is untouched.
-    #: This bare form is only a fallback for a snapshot missing its timestamp;
-    #: the normal breadcrumb carries the ts (see :meth:`_screen_breadcrumb`).
+    #: Breadcrumb that replaces the screen snapshot of a stored message in the
+    #: model-facing context. No snapshot is sent where it sits: the newest is
+    #: re-attached as a trailing block and every stored one collapses to this
+    #: line to save context (the live screen is re-fetchable via tools, and the
+    #: exact past snapshot via get_past_snapshot(timestamp)). The stored log is
+    #: untouched. This bare form is only a fallback for a snapshot missing its
+    #: timestamp; the normal breadcrumb carries the ts (see
+    #: :meth:`_screen_breadcrumb`).
     _SCREEN_PLACEHOLDER = "[screen omitted; superseded by a newer snapshot]"
 
     #: Matches a ``<screenContext>`` open tag with any (or no) attributes.
@@ -502,9 +510,9 @@ class AgentCore:
         """Timestamp an unstamped ``<screenContext>`` in a tool result.
 
         ``inject_input`` returns the settled screen, which is as big as any user
-        turn's snapshot. Stamping it lets :meth:`_strip_old_screenshots` collapse
-        it once it is superseded and still leave the model a breadcrumb it can
-        expand again with ``get_past_snapshot``.
+        turn's snapshot. Stamping it lets :meth:`_collapse_screenshots` collapse
+        it and still leave the model a breadcrumb it can expand again with
+        ``get_past_snapshot``.
         """
         if not isinstance(text, str):
             return text
@@ -517,66 +525,66 @@ class AgentCore:
         return cls._SCREEN_OPEN_RE.sub(stamp, text, count=1)
 
     @classmethod
-    def _strip_old_screenshots(cls, history: list[dict]) -> list[dict]:
-        """Return a copy of the neutral log keeping only the newest screenshot.
+    def _collapse_screenshots(cls, history: list[dict]) -> tuple[list[dict], str]:
+        """Collapse every stored snapshot to a breadcrumb; return the newest one.
 
         Screen snapshots reach the log from two directions: every user turn
         embeds a ``<screenContext ts="...">...</screenContext>`` block, and tools
         that act on the terminal (``inject_input``) report the settled screen the
         same way. Both are thousands of tokens and both go stale the moment the
-        screen changes, so only the *last* snapshot in the log is kept verbatim;
-        every earlier one -- whatever message carries it -- collapses to a
-        timestamped breadcrumb (see :meth:`_screen_breadcrumb`) that the model
-        can expand again with ``get_past_snapshot(timestamp)``. The surrounding
-        text (the ``<userRequest>``, a tool result's prose) is left untouched.
-        This only reshapes the per-request render; :attr:`history` and the
-        persisted session keep the full snapshots.
+        screen changes, so none of them is sent where it sits -- each becomes a
+        timestamped breadcrumb (see :meth:`_screen_breadcrumb`) the model can
+        expand again with ``get_past_snapshot(timestamp)``, and the newest one is
+        handed back for :meth:`_build_context` to re-attach at the end.
+
+        Collapsing *every* snapshot, rather than sparing the newest in place, is
+        what makes the rendered history append-only: a message reads the same on
+        every later request, so a provider's prompt cache keeps matching it. The
+        surrounding text (the ``<userRequest>``, a tool result's prose) is left
+        untouched, and :attr:`history` and the persisted session keep the full
+        snapshots.
         """
         close_tag = "</screenContext>"
 
-        def open_match(content: str):
-            return cls._SCREEN_OPEN_RE.search(content)
-
-        def has_screen(msg: dict) -> bool:
-            return (
-                isinstance(msg, dict)
-                and isinstance(msg.get("content"), str)
-                and open_match(msg["content"]) is not None
-                and close_tag in msg["content"]
-            )
-
-        last = -1
-        for i, msg in enumerate(history):
-            if has_screen(msg):
-                last = i
-        if last < 0:
-            return list(history)
+        def screen_span(msg: dict):
+            """The open-tag match and end offset of ``msg``'s snapshot, if any."""
+            if not (
+                isinstance(msg, dict) and isinstance(msg.get("content"), str)
+            ):
+                return None
+            m = cls._SCREEN_OPEN_RE.search(msg["content"])
+            if m is None:
+                return None
+            end = msg["content"].find(close_tag)
+            if end < 0:
+                return None
+            return m, end + len(close_tag)
 
         out: list[dict] = []
-        for i, msg in enumerate(history):
-            if i != last and has_screen(msg):
-                content = msg["content"]
-                m = open_match(content)
-                open_tag = m.group(0)
-                ts_m = cls._SCREEN_TS_RE.search(open_tag)
-                ts = ts_m.group(1) if ts_m else None
-                start = m.start()
-                end = content.find(close_tag) + len(close_tag)
-                trimmed = (
-                    content[:start]
-                    + open_tag
-                    + "\n"
-                    + cls._screen_breadcrumb(ts)
-                    + "\n"
-                    + close_tag
-                    + content[end:]
-                )
-                new_msg = dict(msg)
-                new_msg["content"] = trimmed
-                out.append(new_msg)
-            else:
+        live = ""
+        for msg in history:
+            span = screen_span(msg)
+            if span is None:
                 out.append(msg)
-        return out
+                continue
+            m, end = span
+            content = msg["content"]
+            open_tag = m.group(0)
+            ts_m = cls._SCREEN_TS_RE.search(open_tag)
+            ts = ts_m.group(1) if ts_m else None
+            live = content[m.start():end]
+            new_msg = dict(msg)
+            new_msg["content"] = (
+                content[: m.start()]
+                + open_tag
+                + "\n"
+                + cls._screen_breadcrumb(ts)
+                + "\n"
+                + close_tag
+                + content[end:]
+            )
+            out.append(new_msg)
+        return out, live
 
     def _snapshot_by_timestamp(self, ts: str) -> str | None:
         """Return the snapshot body stored under timestamp ``ts``, or ``None``.

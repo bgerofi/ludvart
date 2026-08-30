@@ -98,10 +98,12 @@ def system_prompt(tools: Sequence[ToolSpec]) -> str:
     tool_lines = "\n".join(f"  - {t.name}: {t.description}" for t in tools)
     return (
         "You are ludvart, an assistant embedded in a terminal. The user can ask "
-        "you questions across multiple turns. Each user message contains a "
-        "<screenContext> block with a snapshot of what is currently on the "
-        "terminal (the screen may change between turns) followed by the actual "
-        "question in a <userRequest> block. Use the conversation history and "
+        "you questions across multiple turns. Each user message carries the "
+        "question in a <userRequest> block. The terminal screen as it looks "
+        "right now is supplied in a <screenContext> block at the very end of "
+        "the conversation -- that one is live; every earlier snapshot has been "
+        "replaced by a breadcrumb line naming its timestamp, which you can "
+        "expand again with get_past_snapshot. Use the conversation history and "
         "the latest screen to answer concisely and helpfully.\n\n"
         "For multi-step work, narrate your immediate next action or a useful "
         "observation in short, user-visible plain text before calling a tool. "

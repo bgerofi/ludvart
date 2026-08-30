@@ -2,9 +2,10 @@
 
 Every user turn embeds a ``<screenContext ts="...">`` snapshot stamped with a
 UTC nanosecond timestamp (see ``AgentCore.run_turn`` / ``_utc_ns_timestamp``).
-Older snapshots are stripped from the model-facing context and collapsed to a
-breadcrumb that keeps the timestamp, and ``get_past_snapshot`` fetches the full
-snapshot back from the unstripped log.
+In the model-facing context every stored snapshot is collapsed to a breadcrumb
+that keeps the timestamp -- the newest one is re-attached in a trailing block --
+and ``get_past_snapshot`` fetches the full snapshot back from the uncollapsed
+log.
 
 The agent loop lives in the backend process, so these exercise
 :class:`ludvart.agent_core.AgentCore` directly.
@@ -122,7 +123,7 @@ def test_stripping_keeps_timestamp_breadcrumb_and_snapshot_retrievable():
         _user_turn(ts_new, "NEW SCREEN BODY", "new q"),
     ]
 
-    stripped = AgentCore._strip_old_screenshots(r.history)
+    stripped, live = AgentCore._collapse_screenshots(r.history)
 
     old_msg = stripped[0]["content"]
     new_msg = stripped[2]["content"]
@@ -131,7 +132,13 @@ def test_stripping_keeps_timestamp_breadcrumb_and_snapshot_retrievable():
     assert ts_old in old_msg, old_msg
     assert f"get_past_snapshot({ts_old})" in old_msg, old_msg
     assert "old q" in old_msg, old_msg
-    assert "NEW SCREEN BODY" in new_msg, new_msg
+    # The newest one is collapsed where it sits too, and handed back instead so
+    # it can be re-attached at the end of the prompt.
+    assert "NEW SCREEN BODY" not in new_msg, new_msg
+    assert f"get_past_snapshot({ts_new})" in new_msg, new_msg
+    assert "new q" in new_msg, new_msg
+    assert "NEW SCREEN BODY" in live, live
+    assert f'ts="{ts_new}"' in live, live
 
     assert "OLD SCREEN BODY" in r.history[0]["content"]
 
@@ -164,12 +171,13 @@ def test_a_tool_results_screen_is_stamped_and_then_superseded():
         _user_turn(ts_new, "NEW SCREEN BODY", "new q"),
     ]
 
-    stripped = AgentCore._strip_old_screenshots(r.history)
+    stripped, live = AgentCore._collapse_screenshots(r.history)
     tool_msg = stripped[1]["content"]
     assert "TOOL SCREEN BODY" not in tool_msg, tool_msg
     assert f"get_past_snapshot({ts_tool})" in tool_msg, tool_msg
     assert "Injected 5 byte(s)" in tool_msg, tool_msg
-    assert "NEW SCREEN BODY" in stripped[2]["content"]
+    assert "NEW SCREEN BODY" not in stripped[2]["content"]
+    assert "NEW SCREEN BODY" in live
 
     assert "TOOL SCREEN BODY" in r._tool_get_past_snapshot({"timestamp": ts_tool})
     print("a tool result's screen is stamped and superseded: OK")
@@ -188,10 +196,45 @@ def test_the_newest_screen_survives_even_when_a_tool_reported_it():
             ),
         },
     ]
-    stripped = AgentCore._strip_old_screenshots(r.history)
-    assert "FRESHEST SCREEN" in stripped[2]["content"]
+    stripped, live = AgentCore._collapse_screenshots(r.history)
+    assert "FRESHEST SCREEN" in live
+    assert "FRESHEST SCREEN" not in stripped[2]["content"]
     assert "OLD SCREEN BODY" not in stripped[0]["content"]
     print("the newest screen survives whoever reported it: OK")
+
+
+def test_the_live_screen_is_carried_by_the_trailing_block():
+    """The one live snapshot is re-attached at the end, not left where it was.
+
+    Keeping it in place would rewrite that message on the next request -- the
+    snapshot collapses to a breadcrumb once a newer one arrives -- and a
+    rewritten message costs the provider's prompt cache everything after it.
+    """
+    r = _core()
+    ts = "2026-07-06T09:00:00.000000001"
+    r.history = [_user_turn(ts, "LIVE SCREEN BODY", "q")]
+
+    rendered = r._build_context()
+
+    assert "LIVE SCREEN BODY" not in rendered[0]["content"]
+    assert f"get_past_snapshot({ts})" in rendered[0]["content"]
+    trailing = rendered[-1]
+    assert trailing["role"] == "user"
+    assert "LIVE SCREEN BODY" in trailing["content"]
+    assert f'ts="{ts}"' in trailing["content"]
+    print("the live screen is carried by the trailing block: OK")
+
+
+def test_a_screenless_history_still_gets_a_trailing_block():
+    r = _core()
+    r.history = [{"role": "user", "content": "<userRequest>\nq\n</userRequest>"}]
+
+    rendered = r._build_context()
+
+    assert len(rendered) == 2
+    assert "<screenContext" not in rendered[-1]["content"]
+    assert AgentCore._TOOL_REMINDER in rendered[-1]["content"]
+    print("a screenless history still gets a trailing block: OK")
 
 
 def test_stamping_leaves_an_already_stamped_screen_alone():
@@ -211,6 +254,8 @@ def main():
     test_stripping_keeps_timestamp_breadcrumb_and_snapshot_retrievable()
     test_a_tool_results_screen_is_stamped_and_then_superseded()
     test_the_newest_screen_survives_even_when_a_tool_reported_it()
+    test_the_live_screen_is_carried_by_the_trailing_block()
+    test_a_screenless_history_still_gets_a_trailing_block()
     test_stamping_leaves_an_already_stamped_screen_alone()
     print("\nALL get_past_snapshot tests passed.")
 

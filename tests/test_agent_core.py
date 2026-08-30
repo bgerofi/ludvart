@@ -197,7 +197,7 @@ def test_neutral_helpers():
     print("neutral_assistant/neutral_tool_result shapes: OK")
 
 
-def test_reminder_appended_to_last_user_turn_only():
+def test_reminder_rides_in_the_trailing_block():
     host = RecordingHost()
     llm = ScriptedLLM([_text_turn("ok")])
     core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
@@ -207,10 +207,15 @@ def test_reminder_appended_to_last_user_turn_only():
     sent = llm.seen_messages[0]
     users = [m for m in sent if m.get("role") == "user"]
     assert users, "expected a user message in the request"
+    # The reminder travels in its own trailing message rather than glued onto
+    # the stored question, so appending the next turn cannot rewrite that
+    # question and invalidate a cached prefix.
+    assert AgentCore._TOOL_REMINDER not in users[0]["content"]
     assert AgentCore._TOOL_REMINDER in users[-1]["content"]
-    # The reminder sits after the user request, at the very end of the prompt.
+    assert "first question" not in users[-1]["content"]
+    # The reminder sits at the very end of the prompt.
     assert users[-1]["content"].rstrip().endswith("</reminder>")
-    print("reminder is appended to the last user turn: OK")
+    print("reminder rides in the trailing block: OK")
 
 
 def test_reminder_names_the_helper_path():
@@ -246,13 +251,40 @@ def test_reminder_does_not_accumulate_across_turns():
 
     sent = llm.seen_messages[1]
     users = [m for m in sent if m.get("role") == "user"]
-    assert len(users) == 2
-    # Only the newest user turn carries the reminder; the older one is clean.
-    assert AgentCore._TOOL_REMINDER not in users[0]["content"]
-    assert AgentCore._TOOL_REMINDER in users[1]["content"]
+    # Two stored questions plus the trailing block.
+    assert len(users) == 3
+    # Only the trailing block carries the reminder; the stored turns are clean.
+    for stored in users[:-1]:
+        assert AgentCore._TOOL_REMINDER not in stored["content"]
     # And exactly once, not stacked up.
-    assert users[1]["content"].count(AgentCore._TOOL_REMINDER) == 1
+    assert users[-1]["content"].count(AgentCore._TOOL_REMINDER) == 1
     print("reminder does not accumulate across turns: OK")
+
+
+def test_the_rendered_history_is_append_only():
+    """A later request must not rewrite a single earlier message.
+
+    Prompt caches match on the longest common prefix, so an edit anywhere in the
+    middle -- a superseded screen collapsing, the reminder moving off the
+    previous question -- discards every cached token from that point on.
+    Everything that differs between requests belongs in the trailing block.
+    """
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    llm = ScriptedLLM(
+        [_tool_turn("working", call), _text_turn("one"), _text_turn("two")]
+    )
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("first", "SCREEN-A")
+    core.run_turn("second", "SCREEN-B")
+
+    assert llm.calls == 3
+    for older, newer in zip(llm.seen_messages, llm.seen_messages[1:]):
+        # The previous request, minus its own trailing block, has to survive
+        # verbatim as a prefix of the next one.
+        assert newer[: len(older) - 1] == older[:-1]
+    print("the rendered history is append-only: OK")
 
 
 def test_reminder_survives_tool_loop_iterations():

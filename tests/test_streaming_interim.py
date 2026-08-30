@@ -317,7 +317,7 @@ def test_anthropic_sanitizes_stored_whitespace_history():
     request = client._prepare_converse(messages, tools=None, max_tokens=16)
 
     # System prompt is pulled out separately; no system turns leak into messages.
-    assert request["system"] == "sys"
+    assert request["system"][0]["text"] == "sys"
     for msg in request["messages"]:
         assert msg["role"] != "system"
         content = msg["content"]
@@ -328,6 +328,66 @@ def test_anthropic_sanitizes_stored_whitespace_history():
                 if block.get("type") == "text":
                     assert block["text"].strip() != "", block
     print("anthropic sanitizes stored whitespace history: OK")
+
+
+def test_anthropic_merges_adjacent_user_turns():
+    """Anthropic rejects two user messages in a row; ludvart sends them.
+
+    The live screen and tool reminder ride in a trailing user block of their own
+    so nothing earlier is ever rewritten, and tool results are user messages
+    too, so the pair has to be folded together on the way out.
+    """
+    client = _anthropic_client()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "sure"},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "out"}],
+        },
+        {"role": "user", "content": "TRAILING"},
+    ]
+    request = client._prepare_converse(messages, tools=None, max_tokens=16)
+
+    roles = [m["role"] for m in request["messages"]]
+    assert roles == ["user", "assistant", "user"], roles
+    last = request["messages"][-1]["content"]
+    assert [b["type"] for b in last] == ["tool_result", "text"], last
+    assert last[-1]["text"] == "TRAILING"
+    print("anthropic merges adjacent user turns: OK")
+
+
+def test_anthropic_marks_the_cacheable_prefix():
+    """Anthropic never caches implicitly, so the breakpoints have to be explicit.
+
+    The tools and system prompt are fixed for the session. The last message
+    carries ludvart's live block, which differs on every request, so the message
+    breakpoint goes one earlier -- paying a cache write for the live screen buys
+    an entry that is never read.
+    """
+    client = _anthropic_client()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "sure"},
+        {"role": "user", "content": "TRAILING"},
+    ]
+    tools = [
+        ToolSpec(name="a", description="d", input_schema={"type": "object"}),
+        ToolSpec(name="b", description="d", input_schema={"type": "object"}),
+    ]
+    request = client._prepare_converse(messages, tools=tools, max_tokens=16)
+
+    mark = {"type": "ephemeral"}
+    assert request["system"][0]["cache_control"] == mark
+    assert "cache_control" not in request["tools"][0]
+    assert request["tools"][-1]["cache_control"] == mark
+
+    turns = request["messages"]
+    assert turns[-2]["content"][-1]["cache_control"] == mark
+    assert "cache_control" not in str(turns[-1]["content"])
+    print("anthropic marks the cacheable prefix: OK")
 
 
 # -- panel renders the interim line ----------------------------------------
@@ -456,6 +516,8 @@ def main():
     test_anthropic_drops_empty_text_block()
     test_anthropic_empty_only_turn_gets_filler()
     test_anthropic_sanitizes_stored_whitespace_history()
+    test_anthropic_merges_adjacent_user_turns()
+    test_anthropic_marks_the_cacheable_prefix()
     test_panel_renders_interim_line()
     with tempfile.TemporaryDirectory() as d:
         test_streamed_narration_reaches_the_panel_and_is_cleared(Path(d))

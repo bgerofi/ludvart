@@ -1574,7 +1574,9 @@ class AnthropicClient(LLMClient):
     def complete(self, messages: Sequence[Message], max_tokens: int = 1024) -> str:
         # Anthropic takes the system prompt separately from the message list.
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-        turns = [m for m in messages if m.get("role") != "system"]
+        turns = self._merge_adjacent_user_turns(
+            [m for m in messages if m.get("role") != "system"]
+        )
         kwargs: dict = {
             "model": self.config.model,
             "max_tokens": max_tokens,
@@ -1629,20 +1631,33 @@ class AnthropicClient(LLMClient):
         max_tokens: int,
     ) -> Any:
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-        turns = [
-            self._sanitize_turn(m)
-            for m in messages
-            if m.get("role") != "system"
-        ]
+        turns = self._merge_adjacent_user_turns(
+            [
+                self._sanitize_turn(m)
+                for m in messages
+                if m.get("role") != "system"
+            ]
+        )
+        # The last message is ludvart's live block (current screen + reminder),
+        # which differs on every request; breaking one message earlier caches
+        # exactly the prefix that does not.
+        if len(turns) >= 2:
+            turns = [*turns[:-2], self._mark_cacheable(turns[-2]), turns[-1]]
         kwargs: dict = {
             "model": self.config.model,
             "max_tokens": max_tokens,
             "messages": turns,
         }
         if system_parts:
-            kwargs["system"] = "\n\n".join(system_parts)
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": "\n\n".join(system_parts),
+                    "cache_control": dict(self._CACHE_CONTROL),
+                }
+            ]
         if tools:
-            kwargs["tools"] = [
+            specs = [
                 {
                     "name": t.name,
                     "description": t.description,
@@ -1650,7 +1665,64 @@ class AnthropicClient(LLMClient):
                 }
                 for t in tools
             ]
+            # Caches the whole tool block, which is fixed for the session.
+            specs[-1]["cache_control"] = dict(self._CACHE_CONTROL)
+            kwargs["tools"] = specs
         return kwargs
+
+    #: Anthropic caches the prompt prefix ending at each ``cache_control``
+    #: breakpoint (4 at most) and bills a hit at a fraction of the input rate.
+    #: Unlike OpenAI and Gemini it never caches implicitly, so without these
+    #: markers a conversation re-pays full price for its whole history on every
+    #: request.
+    _CACHE_CONTROL = {"type": "ephemeral"}
+
+    @staticmethod
+    def _content_blocks(message: Message) -> list[dict]:
+        """``message``'s content as Anthropic block dicts (empty when blank)."""
+        content = message.get("content")
+        if isinstance(content, list):
+            return list(content)
+        if isinstance(content, str) and content.strip():
+            return [{"type": "text", "text": content}]
+        return []
+
+    @classmethod
+    def _merge_adjacent_user_turns(cls, turns: list[Message]) -> list[Message]:
+        """Combine consecutive user messages, which Anthropic rejects.
+
+        ludvart keeps its live screen block in a message of its own so that no
+        earlier message is ever rewritten. Anthropic requires strictly
+        alternating roles, so here -- and only here -- that block is folded into
+        the message it follows.
+        """
+        out: list[Message] = []
+        for msg in turns:
+            prev = out[-1] if out else None
+            if (
+                prev is not None
+                and prev.get("role") == "user"
+                and msg.get("role") == "user"
+            ):
+                out[-1] = {
+                    **prev,
+                    "content": cls._content_blocks(prev) + cls._content_blocks(msg),
+                }
+            else:
+                out.append(msg)
+        return out
+
+    @classmethod
+    def _mark_cacheable(cls, message: Message) -> Message:
+        """Return ``message`` with a cache breakpoint on its last content block."""
+        blocks = [
+            dict(b) if isinstance(b, dict) else b
+            for b in cls._content_blocks(message)
+        ]
+        if not blocks or not isinstance(blocks[-1], dict):
+            return message
+        blocks[-1]["cache_control"] = dict(cls._CACHE_CONTROL)
+        return {**message, "content": blocks}
 
     def _send_turn(self, request: Any) -> Turn:
         resp = self._client.messages.create(**request)
