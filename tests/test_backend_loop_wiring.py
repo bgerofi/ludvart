@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -129,6 +130,68 @@ def run_backend(root: Path, pcts) -> tuple[Ludvart, ScriptedLLM, str]:
         t.join(timeout=2)
         backend_ch.close()
     return r, llm, reply
+
+
+def test_a_cancel_interrupts_the_turn_it_was_aimed_at(tmp_path: Path):
+    """Steering must cut into the running turn, not queue up behind it.
+
+    This is the whole chain: the client sends CANCEL while its own asking
+    thread is still pumping the turn's frames, so the backend only sees it if
+    something other than the busy main thread is reading the wire.
+    """
+    r = _make_client(tmp_path)
+    started = threading.Event()
+
+    class _SlowLLM(ScriptedLLM):
+        def __init__(self, pcts):
+            super().__init__(pcts)
+            self.slow_done = False
+
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            if not self.slow_done:
+                self.slow_done = True
+                started.set()
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    # A real stream keeps emitting; each chunk is a chance to
+                    # notice the cancel. Bounded so a regression fails instead
+                    # of hanging.
+                    on_text("thinking out loud")
+                    time.sleep(0.02)
+                return Turn(
+                    text="ran to completion despite the cancel",
+                    assistant_message={"role": "assistant", "content": "x"},
+                    usage=None,
+                )
+            return super().converse(messages, tools, max_tokens, on_text)
+
+    llm = _SlowLLM([30.0])
+    client_ch, backend_ch = _pipe_pair()
+    t = threading.Thread(target=lambda: serve(backend_ch, llm=llm), daemon=True)
+    t.start()
+    try:
+        assert client_ch.recv()["type"] == "hello"
+        backend = BackendClient(client_ch)
+        host = _ClientTerminalHost(r)
+        replies: list[str] = []
+        asker = threading.Thread(
+            target=lambda: replies.append(backend.ask("go", "SCREEN", host)),
+            daemon=True,
+        )
+        asker.start()
+        assert started.wait(5), "the turn never started"
+        backend.cancel()
+        asker.join(timeout=10)
+        assert not asker.is_alive(), "the cancel did not end the turn"
+        assert replies == ["thinking out loud"], replies
+
+        # The next turn -- the steering instruction -- must not inherit the
+        # cancel, or every later request would be aborted on arrival.
+        assert backend.ask("now do this instead", "SCREEN", host) == "final answer"
+    finally:
+        client_ch.close()
+        t.join(timeout=2)
+        backend_ch.close()
 
 
 def test_context_badge_is_updated(tmp_path: Path):

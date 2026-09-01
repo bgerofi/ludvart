@@ -204,6 +204,43 @@ def test_frame_channel_over_os_pipe():
     print("FrameChannel round-trips over an OS pipe and closes cleanly: OK")
 
 
+def test_reader_thread_delivers_out_of_band_frames_during_a_read():
+    """An unsolicited frame must land even while nobody is calling recv().
+
+    A CANCEL arrives precisely when the peer is busy doing the thing it is
+    being asked to stop, so waiting for the next recv() would defeat it.
+    """
+    a_r, a_w = os.pipe()
+    b_r, b_w = os.pipe()
+    client = FrameChannel(os.fdopen(a_r, "rb"), os.fdopen(b_w, "wb"))
+    backend = FrameChannel(os.fdopen(b_r, "rb"), os.fdopen(a_w, "wb"))
+
+    seen = threading.Event()
+
+    def consume(msg):
+        if msg.get("type") == MsgType.CANCEL:
+            seen.set()
+            return True
+        return False
+
+    backend.start_reader(consume)
+
+    client.send(message(MsgType.CANCEL))
+    assert seen.wait(2), "the cancel never reached the reader"
+    # Ordinary frames still queue up for recv() in arrival order.
+    client.send(message(MsgType.SUBMIT, text="one"))
+    client.send(message(MsgType.CANCEL))
+    client.send(message(MsgType.SUBMIT, text="two"))
+    assert backend.recv() == {"type": "submit", "text": "one"}
+    assert backend.recv() == {"type": "submit", "text": "two"}
+
+    client.close()
+    assert backend.recv() is None
+    assert backend.recv() is None  # end-of-stream is sticky
+    backend.close()
+    print("the reader thread delivers out-of-band frames promptly: OK")
+
+
 def test_frame_channel_send_is_thread_safe():
     # Two threads sending concurrently must not interleave bytes; the reader must
     # decode both frames intact.
@@ -288,6 +325,7 @@ def main():
     test_msg_type_missing_raises()
     test_require_fields()
     test_frame_channel_over_os_pipe()
+    test_reader_thread_delivers_out_of_band_frames_during_a_read()
     test_frame_channel_send_is_thread_safe()
     test_recv_swallows_keepalives()
     test_a_channel_without_pings_is_not_marked_alive()

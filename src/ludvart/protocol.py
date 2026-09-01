@@ -23,10 +23,11 @@ plus type-specific fields.
 from __future__ import annotations
 
 import json
+import queue
 import struct
 import threading
 import time
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 #: 4-byte big-endian unsigned length prefix on every frame.
 _HEADER = struct.Struct(">I")
@@ -61,8 +62,9 @@ class MsgType:
     COMMAND = "command"
     #: C->B: answer an approval prompt with "y" / "n" / "a".
     APPROVAL = "approval"
-    #: C->B: submit a steering instruction / cancel the in-flight turn.
-    STEER = "steer"
+    #: C->B: abandon the in-flight turn. Sent when the user steers or cancels;
+    #: arrives unsolicited mid-turn, so the backend only sees it promptly if it
+    #: is reading on a separate thread (:meth:`FrameChannel.start_reader`).
     CANCEL = "cancel"
     #: B->C: run a client-side (terminal) tool; expects a TOOL_RESULT reply.
     TOOL_INVOKE = "tool_invoke"
@@ -224,10 +226,48 @@ class FrameChannel:
         self._max_frame = max_frame
         self._write_lock = threading.Lock()
         self._closed = False
+        self._inbox: queue.Queue | None = None
+        self._reader_thread: threading.Thread | None = None
         #: When the peer was last heard from, for liveness checks.
         self.last_recv = time.monotonic()
         #: True once a PING has arrived, i.e. the peer does keepalives at all.
         self.saw_ping = False
+
+    def start_reader(self, on_out_of_band: "Callable[[dict], bool]") -> None:
+        """Read frames on a private thread so unsolicited ones arrive promptly.
+
+        Without this, a peer notices an out-of-band frame only the next time it
+        happens to call :meth:`recv` -- which, mid-turn, may not be until the
+        model has finished streaming. ``on_out_of_band`` runs on the reader
+        thread for every frame and returns ``True`` to consume it; anything it
+        declines is queued for :meth:`recv` in arrival order. It must not block.
+        """
+        if self._reader_thread is not None:
+            return
+        inbox: queue.Queue = queue.Queue()
+        self._inbox = inbox
+
+        def pump() -> None:
+            while True:
+                try:
+                    msg = read_frame(self._reader, max_frame=self._max_frame)
+                except Exception:  # noqa: BLE001 - report as EOF to readers
+                    msg = None
+                if msg is None:
+                    inbox.put(None)
+                    return
+                self.last_recv = time.monotonic()
+                if msg.get("type") == MsgType.PING:
+                    self.saw_ping = True
+                    continue
+                if on_out_of_band(msg):
+                    continue
+                inbox.put(msg)
+
+        self._reader_thread = threading.Thread(
+            target=pump, name="ludvart-frame-reader", daemon=True
+        )
+        self._reader_thread.start()
 
     def send(self, obj: dict[str, Any]) -> None:
         """Serialise and write one message frame (thread-safe)."""
@@ -241,6 +281,12 @@ class FrameChannel:
         any point, including while a read site is blocked waiting for one
         specific reply, and those sites reject anything unexpected.
         """
+        inbox = self._inbox
+        if inbox is not None:
+            msg = inbox.get()
+            if msg is None:
+                inbox.put(None)  # end-of-stream is sticky for later callers
+            return msg
         while True:
             msg = read_frame(self._reader, max_frame=self._max_frame)
             self.last_recv = time.monotonic()

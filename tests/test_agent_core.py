@@ -525,6 +525,126 @@ def test_failed_turn_is_rolled_back_out_of_the_history():
     print("a failed turn is rolled back out of the history: OK")
 
 
+def test_a_cancel_interrupts_the_stream_and_keeps_the_partial_answer():
+    """Steering has to cut into the turn, not wait politely for it to end.
+
+    The stream is the longest uninterruptible stretch of a turn, so if the
+    cancel is only noticed between steps the user sees their correction ignored
+    until the model has finished talking.
+    """
+    host = RecordingHost()
+    core = AgentCore(None, host, system_prompt="SYS")
+
+    class _CancelMidStream(ScriptedLLM):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            self.calls += 1
+            on_text("partial ans")
+            core.cancel.set()
+            on_text("partial answer, now interrupted")
+            raise AssertionError("the stream should have been interrupted")
+
+    core.llm = _CancelMidStream([])
+
+    reply = core.run_turn("do a long thing", "SCREEN")
+
+    assert reply == "partial ans"
+    assert core.llm.calls == 1  # it did not carry on to another request
+    # Not rolled back: the steering instruction lands after this, so the model
+    # reads its own partial work instead of a reconstruction of it.
+    assert len(core.history) == 2, core.history
+    assert core.history[-1] == {"role": "assistant", "content": "partial ans"}
+    print("a cancel interrupts the stream and keeps the partial answer: OK")
+
+
+def test_a_cancel_between_steps_stops_the_next_request():
+    """A cancel that lands while a tool runs must not buy another model call.
+
+    Nothing is streaming at that moment, so a check that only lives in the
+    streaming callback would let the loop fire off (and pay for) one more
+    request before noticing.
+    """
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    core = AgentCore(None, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    class _SilentLLM(ScriptedLLM):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            self.calls += 1  # a provider that narrates nothing
+            return self._turns.pop(0)
+
+    core.llm = _SilentLLM([_tool_turn("", call), _text_turn("one call too many")])
+    plain_tool = host.run_terminal_tool
+
+    def cancel_while_running(name, args):
+        core.cancel.set()  # the user steers while the tool is in flight
+        return plain_tool(name, args)
+
+    host.run_terminal_tool = cancel_while_running
+
+    reply = core.run_turn("do it", "SCREEN")
+
+    assert reply == ""
+    assert core.llm.calls == 1, core.llm.calls
+    assert len(host.tool_calls) == 1  # the tool that was already running finished
+    # user + assistant + the tool result that answers its call.
+    assert len(core.history) == 3, core.history
+    print("a cancel between steps stops the next request: OK")
+
+
+def test_a_cancel_survives_the_providers_retry_wrapper():
+    """The cancel must not be mistaken for an API failure and retried.
+
+    Every provider wraps its request in ``except Exception`` and reports what
+    it catches as an error, so a cancellation raised out of the streaming
+    callback has to be something that wrapper does not catch.
+    """
+    host = RecordingHost()
+    core = AgentCore(None, host, system_prompt="SYS")
+
+    class _WrappingLLM(ScriptedLLM):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            self.calls += 1
+            try:
+                core.cancel.set()
+                on_text("never narrated")
+            except Exception as exc:  # mirrors LLMClient._request
+                raise RuntimeError("provider error") from exc
+            raise AssertionError("the cancel should have unwound the request")
+
+    core.llm = _WrappingLLM([])
+
+    assert core.run_turn("go", "SCREEN") == ""
+    assert core.llm.calls == 1
+    print("a cancel survives the provider's retry wrapper: OK")
+
+
+def test_a_cancel_stops_before_the_next_tool_runs():
+    """A cancelled turn must not keep spending tool calls the user waved off."""
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    core = AgentCore(None, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    class _CancelAfterStream(ScriptedLLM):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            turn = super().converse(messages, tools, max_tokens, on_text)
+            core.cancel.set()
+            return turn
+
+    core.llm = _CancelAfterStream([_tool_turn("about to inject", call)])
+
+    reply = core.run_turn("do it", "SCREEN")
+
+    assert reply == ""
+    assert host.tool_calls == []  # the injection never happened
+    # The assistant turn that asked for it is kept, and the unanswered call is
+    # dropped when the context is rendered, so the next turn is well-formed.
+    assert len(core.history) == 2, core.history
+    assert core.history[-1]["role"] == "assistant"
+    rendered = [m for m in core._build_context() if m.get("role") == "assistant"]
+    assert all("tool_calls" not in m for m in rendered), rendered
+    print("a cancel stops before the next tool runs: OK")
+
+
 def test_a_later_turn_after_a_failure_is_well_formed():
     host = RecordingHost()
     call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
@@ -591,6 +711,10 @@ def main():
     test_a_resumed_session_renders_with_a_live_trailing_block()
     test_compact_on_demand_ignores_the_threshold()
     test_failed_turn_is_rolled_back_out_of_the_history()
+    test_a_cancel_interrupts_the_stream_and_keeps_the_partial_answer()
+    test_a_cancel_between_steps_stops_the_next_request()
+    test_a_cancel_survives_the_providers_retry_wrapper()
+    test_a_cancel_stops_before_the_next_tool_runs()
     test_a_later_turn_after_a_failure_is_well_formed()
     test_a_dangling_tool_call_is_never_sent()
     print("\nALL agent core tests passed.")

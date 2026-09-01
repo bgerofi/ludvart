@@ -1176,35 +1176,31 @@ class Ludvart:
         if not steer_text:
             self._exit_steer_input(restore_draft=True)
             return
-        self._steer_pending = self._compose_steer_question(
-            self._ask_root_question, panel.interim, steer_text
-        )
+        self._steer_pending = self._compose_steer_question(steer_text)
         self._steer_user_echo = steer_text
         self._exit_steer_input(restore_draft=True)
         # Keep the spinner active so _split_loop continues polling _ask_done.
         self._ask_cancel.set()
+        if self._backend_client is not None:
+            self._backend_client.cancel()
         self._end_wait()
         panel.interim = ""
         panel.activity = "Steering"
 
     @staticmethod
-    def _compose_steer_question(root: str, narration: str, steer: str) -> str:
-        """Build the replacement request after the user interrupts an ask."""
-        progress = narration.strip() or "(no visible progress yet)"
-        original = root.strip() or "(original request unavailable)"
+    def _compose_steer_question(steer: str) -> str:
+        """Wrap a steering instruction as the user turn that replaces the ask.
+
+        The interrupted turn keeps whatever it finished, so the model reads its
+        own partial narration and tool results directly above this and needs no
+        reconstruction of them.
+        """
         return (
-            "The user interrupted your previous attempt to steer you in a new "
-            "direction.\n\n"
-            "Your progress so far (your narration and tool calls):\n"
-            f"<priorProgress>\n{progress}\n</priorProgress>\n\n"
-            "The original request was:\n"
-            f"<originalRequest>\n{original}\n</originalRequest>\n\n"
-            "The user's new steering instruction (prioritize this; it overrides or "
-            "refines the original request):\n"
-            f"<steeringInstruction>\n{steer}\n</steeringInstruction>\n\n"
-            "Continue from the CURRENT terminal state shown above. Do not repeat "
-            "work already completed. If the steering instruction conflicts with "
-            "the original request, follow the steering instruction."
+            "The user interrupted you with a new instruction. Continue from the "
+            "work above and the current terminal state, and do not repeat what "
+            "is already done. Where this conflicts with the earlier request, "
+            "follow this.\n"
+            f"<steeringInstruction>\n{steer.strip()}\n</steeringInstruction>"
         )
 
     def _cancel_ask(self) -> None:

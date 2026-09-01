@@ -660,10 +660,21 @@ def serve(
         )
     )
     watch_client(channel, lambda: _shutdown(manager, core))
+    # A CANCEL arrives while the main thread is busy running the turn it wants
+    # stopped, so it has to be read off the wire by somebody else.
+    channel.start_reader(lambda msg: _consume_cancel(msg, core))
     try:
         _request_loop(channel, manager, core)
     finally:
         core.close()
+
+
+def _consume_cancel(msg: dict, core: AgentCore) -> bool:
+    """Handle a CANCEL frame off the reader thread; True if it was one."""
+    if msg_type(msg) != MsgType.CANCEL:
+        return False
+    core.cancel.set()
+    return True
 
 
 def _request_loop(channel: FrameChannel, manager, core: AgentCore) -> None:
@@ -686,6 +697,10 @@ def _request_loop(channel: FrameChannel, manager, core: AgentCore) -> None:
                 channel.send(message(MsgType.REPLY, text=reply))
                 continue
             try:
+                # Frames are queued in arrival order, so a CANCEL meant for the
+                # previous turn has already been consumed by the time this
+                # SUBMIT is dequeued and can never leak into this one.
+                core.cancel.clear()
                 reply = core.run_turn(text, snapshot)
             except ConnectionError:
                 return  # client vanished mid-turn

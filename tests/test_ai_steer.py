@@ -17,6 +17,16 @@ from ludvart.ludvart import Ludvart  # noqa: E402
 PROMPT = "LLM request in progress: (a)bort & close  (c)ontinue  (s)teer"
 
 
+class _FakeBackendClient:
+    """Records the control frames the panel sends to the backend."""
+
+    def __init__(self, sent):
+        self._sent = sent
+
+    def cancel(self):
+        self._sent.append("cancel")
+
+
 def _make_ludvart():
     runner = Ludvart(["true"])
     runner._panel = AiPanel(cols=80, height=10, provider="openai")
@@ -144,10 +154,31 @@ def test_steer_submit_queues_reissue():
     assert runner._panel.activity == "Steering"
     assert runner._steer_input is False
     assert runner._steer_user_echo == "only show Python files"
-    assert "list files" in runner._steer_pending
-    assert "Reading directory" in runner._steer_pending
     assert "only show Python files" in runner._steer_pending
+    # The interrupted turn keeps its own narration and tool results in the
+    # backend's history, so replaying them into the message would duplicate
+    # them and re-bill the tokens.
+    assert "list files" not in runner._steer_pending
+    assert "Reading directory" not in runner._steer_pending
     print("steer submit queues a replacement request: OK")
+
+
+def test_steer_tells_the_backend_to_stop():
+    """The whole point: the in-flight turn must be interrupted, not awaited.
+
+    Without this frame the backend runs the turn to completion -- every model
+    call and every tool -- and the correction only lands afterwards, which the
+    user experiences as ludvart ignoring them until it has finished.
+    """
+    runner = _make_ludvart()
+    sent = []
+    runner._backend_client = _FakeBackendClient(sent)
+    _start_llm_request(runner)
+    _open_steer_input(runner)
+    runner._panel_input(b"stop and do this instead")
+    runner._panel_input(b"\r")
+    assert sent == ["cancel"], sent
+    print("steer tells the backend to stop: OK")
 
 
 def test_finish_ask_launches_pending_steer():
@@ -240,15 +271,10 @@ def test_finish_ask_completion_exits_steer_input():
 
 
 def test_compose_steer_question_includes_required_context():
-    question = Ludvart._compose_steer_question("ROOT", "NARRATION", "STEER")
-    assert "ROOT" in question
-    assert "NARRATION" in question
+    question = Ludvart._compose_steer_question("STEER")
     assert "STEER" in question
     assert "do not repeat" in question.lower()
-    assert "(no visible progress yet)" in Ludvart._compose_steer_question(
-        "ROOT", "", "STEER"
-    )
-    print("steer request includes root, narration, and correction: OK")
+    print("steer request carries the correction: OK")
 
 
 def test_repeated_steer_preserves_root_question():
@@ -269,10 +295,10 @@ def test_repeated_steer_preserves_root_question():
     _open_steer_input(runner)
     runner._panel_input(b"second correction")
     runner._panel_input(b"\r")
-    assert "original root" in runner._steer_pending
+    assert "second correction" in runner._steer_pending
     assert "first correction" not in runner._steer_pending
     assert first is not runner._steer_pending
-    print("repeated steering retains the original root question: OK")
+    print("repeated steering carries only the newest correction: OK")
 
 
 def test_steer_prompt_renders_on_input_line():
@@ -297,6 +323,7 @@ def main():
     test_steer_escape_restores_draft_and_continues()
     test_empty_steer_submit_continues_request()
     test_steer_submit_queues_reissue()
+    test_steer_tells_the_backend_to_stop()
     test_finish_ask_launches_pending_steer()
     test_a_steer_keeps_an_answer_that_arrived_first()
     test_a_steer_that_interrupted_a_silent_turn_adds_nothing()

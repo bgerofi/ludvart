@@ -173,6 +173,18 @@ class BackendClient:
 
         return self._run(attempt, host)
 
+    def cancel(self) -> None:
+        """Ask the backend to abandon the in-flight turn (steer or cancel).
+
+        Called from the UI thread while another thread is pumping the turn's
+        frames: sends are serialised by the channel, and the backend reads this
+        on its own thread, so it lands without waiting for the model to finish.
+        """
+        try:
+            self._channel.send(message(MsgType.CANCEL))
+        except (ConnectionError, OSError):
+            pass  # the turn is ending regardless
+
     def command(self, line: str, host: TerminalHost, payload=None) -> None:
         """Forward a slash command and render its output (``line`` has no '/').
 

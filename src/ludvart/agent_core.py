@@ -14,6 +14,7 @@ lives behind the host interface.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from typing import Sequence
 
@@ -25,6 +26,15 @@ from .terminal_host import TerminalHost
 #: Tools that must run where the terminal is (the client). Everything else is a
 #: backend tool executed in-process by :meth:`AgentCore._run_tool`.
 DEFAULT_CLIENT_TOOLS = builtin.CLIENT_TOOL_NAMES
+
+
+class TurnCancelled(BaseException):
+    """Unwinds an in-flight turn when the user steers or cancels it.
+
+    Derives from ``BaseException`` so it passes through the providers' ``except
+    Exception`` retry wrapper untouched, instead of being reported as an API
+    failure and replayed.
+    """
 
 
 def neutral_assistant(turn: Turn) -> dict:
@@ -118,6 +128,12 @@ class AgentCore:
         #: Percent of the window used by the most recent prompt (drives both the
         #: badge and the compaction trigger). ``None`` until a turn reports usage.
         self.context_pct: float | None = None
+        #: Set from the channel's reader thread to abandon the in-flight turn.
+        self.cancel = threading.Event()
+
+    def _raise_if_cancelled(self) -> None:
+        if self.cancel.is_set():
+            raise TurnCancelled()
 
     def run_turn(self, question: str, snapshot: str) -> str:
         """Run one user turn to completion and return the assistant's reply.
@@ -164,6 +180,10 @@ class AgentCore:
 
         def on_text(text: str) -> None:
             nonlocal last_stream
+            # The stream is the longest uninterruptible stretch of a turn, so a
+            # steer that only took effect between steps would be felt as "it
+            # ignored me until it finished".
+            self._raise_if_cancelled()
             last_stream = text
             self.host.narrate(compose(text))
 
@@ -178,13 +198,20 @@ class AgentCore:
                 checkpoint = self._SEED_LEN  # the tail now follows the seed
             self.host.set_activity("Thinking")
             last_stream = ""
+            interrupted_while_streaming = True
             try:
+                # A cancel that landed while the previous step's tools were
+                # running would otherwise sit unnoticed until this request
+                # starts streaming -- and a provider that streams nothing would
+                # never notice it at all.
+                self._raise_if_cancelled()
                 turn = self.llm.converse(
                     [system, *self._build_context()],
                     tools=self.tools or None,
                     max_tokens=self.max_tokens,
                     on_text=on_text,
                 )
+                interrupted_while_streaming = False
                 self.history.append(neutral_assistant(turn))
                 self._report_usage(turn)
                 if not turn.tool_calls:
@@ -196,11 +223,16 @@ class AgentCore:
                 if last_stream:
                     narration.append(last_stream)
                 for call in turn.tool_calls:
+                    self._raise_if_cancelled()
                     narration.append(tool_call_note(call))
                     self.host.narrate(compose())
                     self.host.set_activity(f"Calling {call.name}")
                     output = self._stamp_screenshot(self._run_tool(call))
                     self.history.append(neutral_tool_result(call, output))
+            except TurnCancelled:
+                return self._end_cancelled_turn(
+                    last_stream if interrupted_while_streaming else ""
+                )
             except BaseException:
                 # Roll the turn back so the history stays well-formed. Failing
                 # between a tool call and its result (a dropped backend
@@ -209,6 +241,22 @@ class AgentCore:
                 # every later request built from it is rejected.
                 del self.history[checkpoint:]
                 raise
+
+    def _end_cancelled_turn(self, partial: str) -> str:
+        """Close out an interrupted turn, keeping the work it already finished.
+
+        Unlike a failed turn this is *not* rolled back. The steering instruction
+        arrives as the next user turn, so the model reads its own partial work
+        above it rather than a reconstruction of it -- and the tools that already
+        ran keep their record, which matters because their effect on the terminal
+        is real and cannot be rolled back with the history. A tool call left
+        unanswered is dropped when the context is rendered.
+        """
+        if partial:
+            self.history.append({"role": "assistant", "content": partial})
+            self.transcript.append(("ludvart", partial))
+        self._persist()
+        return partial
 
     def _report_usage(self, turn) -> None:
         """Push the prompt's context usage to the host (drives the ``[NN%]`` badge)."""
