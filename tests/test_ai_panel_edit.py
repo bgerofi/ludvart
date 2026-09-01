@@ -226,6 +226,33 @@ def test_a_selection_is_shown_in_reverse_video():
     print("a selection is shown in reverse video: OK")
 
 
+def test_a_system_row_is_clipped_to_the_width_not_wrapped():
+    """List output stays one item per row so it can be scanned.
+
+    Wrapping a long ``/sessions list`` entry would push the next entry down a
+    line and turn the list into a wall of text; the tail of the line is the
+    part worth losing.
+    """
+    panel = AiPanel(cols=20, height=8, provider="test")
+    panel.add_system_row("a session title far longer than the panel is wide")
+    lines = panel._content_lines()
+    assert len(lines) == 1, lines
+    assert b"a session title f..." in lines[0], lines[0]
+
+    # Widening the panel gives the row back: the clip happens at render time,
+    # so the text is never actually lost.
+    panel.set_cols(60)
+    assert b"longer than the panel is wide" in panel._content_lines()[0]
+
+    # A row that fits is left exactly as it is.
+    panel.set_cols(20)
+    short = AiPanel(cols=20, height=8, provider="test")
+    short.add_system_row("fits fine")
+    assert b"fits fine" in short._content_lines()[0]
+    assert b"..." not in short._content_lines()[0]
+    print("a system row is clipped to the width, not wrapped: OK")
+
+
 if __name__ == "__main__":
     test_line_editor()
     test_input_view_scroll()
@@ -234,4 +261,5 @@ if __name__ == "__main__":
     test_a_masked_key_never_wraps_onto_a_second_row()
     test_shift_movement_selects_and_editing_replaces_the_selection()
     test_a_selection_is_shown_in_reverse_video()
+    test_a_system_row_is_clipped_to_the_width_not_wrapped()
     print("all panel-edit tests passed")

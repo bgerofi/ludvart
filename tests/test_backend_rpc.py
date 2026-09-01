@@ -111,6 +111,40 @@ def test_loopback_turn_with_client_tool():
     print("loopback turn drives a client tool and returns the reply: OK")
 
 
+def test_a_host_without_a_row_method_still_sees_the_line():
+    """Panel-only conveniences must degrade, not swallow output.
+
+    Hosts that predate a display kind -- and every test double -- implement
+    only the abstract methods, so an unimplemented one has to fall back to
+    something visible rather than to nothing.
+    """
+    from ludvart.terminal_host import TerminalHost
+
+    class Bare(TerminalHost):
+        def __init__(self):
+            self.infos = []
+
+        def snapshot(self):
+            return ""
+
+        def run_terminal_tool(self, name, args):
+            return ""
+
+        def narrate(self, text):
+            pass
+
+        def set_activity(self, label):
+            pass
+
+        def add_info(self, text):
+            self.infos.append(text)
+
+    host = Bare()
+    host.add_system_row("1. a session")
+    assert host.infos == ["1. a session"], host.infos
+    print("a host without a row method still sees the line: OK")
+
+
 def test_loopback_plain_turn_without_tools():
     client_ch, backend_ch = _pipe_pair()
 
@@ -503,6 +537,7 @@ def test_compact_command_declines_a_short_conversation():
 
 def main():
     test_loopback_turn_with_client_tool()
+    test_a_host_without_a_row_method_still_sees_the_line()
     test_loopback_plain_turn_without_tools()
     test_subprocess_serve_end_to_end()
     test_hello_reports_model_label_and_verification()

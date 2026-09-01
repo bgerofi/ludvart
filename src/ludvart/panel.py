@@ -29,6 +29,14 @@ INPUT_MAX_ROWS = 8
 _THINK_FRAMES = ("", ".", "..", "...", "..", ".")
 
 
+def _clip(text: str, width: int) -> str:
+    """Fit ``text`` on one row, marking a cut with a trailing ellipsis."""
+    width = max(1, width)
+    if len(text) <= width:
+        return text
+    return text[: max(0, width - 3)] + "..."[: min(3, width)]
+
+
 class AiPanel:
     """State and rendering for the bottom AI interaction panel."""
 
@@ -110,6 +118,16 @@ class AiPanel:
         saved conversation nor sent to the LLM.
         """
         self._messages.append(("system", text))
+        self.scroll = 0
+
+    def add_system_row(self, text: str) -> None:
+        """Add a system line that is clipped to the width instead of wrapped.
+
+        For tabular output such as ``/sessions list``, where one item per row is
+        what makes the list scannable and the tail of a long line is the least
+        interesting part of it.
+        """
+        self._messages.append(("row", text))
         self.scroll = 0
 
     def type_text(self, text: str) -> None:
@@ -276,6 +294,13 @@ class AiPanel:
                             _CYAN + _DIM + seg.encode("utf-8", "replace")
                             + _RESET + _EOL
                         )
+            elif kind == "row":
+                for para in logical:
+                    lines.append(
+                        _CYAN + _DIM
+                        + _clip(para, self.cols).encode("utf-8", "replace")
+                        + _RESET + _EOL
+                    )
             elif kind == "summary":
                 header = "\u2500\u2500 context compacted \u00b7 summary \u2500\u2500"
                 lines.append(

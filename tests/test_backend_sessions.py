@@ -53,6 +53,7 @@ class _TextLLM(LLMClient):
 class RecordingHost(TerminalHost):
     def __init__(self):
         self.systems = []
+        self.rows = []
         self.transcripts = []
         self.model_label = None
 
@@ -72,6 +73,10 @@ class RecordingHost(TerminalHost):
         pass
 
     def add_system(self, text):
+        self.systems.append(text)
+
+    def add_system_row(self, text):
+        self.rows.append(text)
         self.systems.append(text)
 
     def set_model(self, label):
@@ -137,6 +142,30 @@ def test_sessions_list_over_backend():
         assert "old question" in joined, joined
         assert saved.session_id in joined, joined
     print("/sessions list is served by the backend store: OK")
+
+
+def test_sessions_list_sends_whole_titles_as_clippable_rows():
+    """The backend must not pre-truncate: only the panel knows the width.
+
+    A title cut to a fixed 48 columns loses exactly the part that tells two
+    similar conversations apart, and leaves the rest of the row blank.
+    """
+    long_title = (
+        "Rework the steering path so a correction interrupts the in-flight "
+        "turn instead of queueing behind it"
+    )
+    with _tmp_sessions():
+        saved = SessionStore.create_new()
+        saved.title = long_title
+        saved.save(
+            [("you", "q")], [{"role": "user", "content": "q"}], provider="custom"
+        )
+        current = SessionStore.create_new()
+        host = _run_command("sessions list", current)
+        assert len(host.rows) == 1, host.rows
+        assert long_title in host.rows[0], host.rows
+        assert "..." not in host.rows[0], host.rows
+    print("/sessions list sends whole titles as clippable rows: OK")
 
 
 def test_sessions_new_over_backend():
@@ -279,6 +308,7 @@ def test_sessions_rename_by_index_and_unquoted_title():
 def main():
     test_agent_core_persists_to_backend_session()
     test_sessions_list_over_backend()
+    test_sessions_list_sends_whole_titles_as_clippable_rows()
     test_sessions_new_over_backend()
     test_sessions_load_over_backend()
     test_sessions_load_by_index_over_backend()

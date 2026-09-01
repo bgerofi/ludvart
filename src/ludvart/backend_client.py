@@ -313,6 +313,8 @@ class BackendClient:
             host.add_summary(msg.get("text", ""))
         elif kind == "system":
             host.add_system(msg.get("text", ""))
+        elif kind == "row":
+            host.add_system_row(msg.get("text", ""))
         elif kind == "model":
             host.set_model(msg.get("label", ""))
         elif kind == "transcript":

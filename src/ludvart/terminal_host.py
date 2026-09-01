@@ -54,6 +54,10 @@ class TerminalHost(ABC):
         """Add an ephemeral system line (e.g. command output). Defaults to info."""
         self.add_info(text)
 
+    def add_system_row(self, text: str) -> None:
+        """Add a system line that is clipped, not wrapped, to the display width."""
+        self.add_system(text)
+
     def set_model(self, label: str) -> None:
         """Update the displayed active-model label (e.g. after ``/model use``)."""
         # Default: nothing to display.

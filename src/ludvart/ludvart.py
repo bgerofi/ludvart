@@ -248,6 +248,11 @@ class _ClientTerminalHost(TerminalHost):
         if panel is not None:
             panel.add_system(text)
 
+    def add_system_row(self, text: str) -> None:
+        panel = self._app._panel
+        if panel is not None:
+            panel.add_system_row(text)
+
     def set_model(self, label: str) -> None:
         self._app._backend_label = label
         panel = self._app._panel

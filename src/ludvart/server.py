@@ -369,6 +369,9 @@ def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
         resolve_session_ref,
     )
 
+    def row(text: str) -> None:
+        channel.send(message(MsgType.PANEL_UPDATE, kind="row", text=text))
+
     sub = args[0] if args else "list"
     if sub == "list":
         core.session_list = list_sessions()
@@ -376,12 +379,13 @@ def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
             emit("No saved sessions yet.")
             return
         current = core.session.session_id if core.session is not None else None
+        width = len(str(len(core.session_list)))
         for i, s in enumerate(core.session_list, 1):
             marker = "*" if s["id"] == current else " "
             label = s.get("title") or s.get("preview") or "(no messages)"
-            if len(label) > 48:
-                label = label[:47] + "..."
-            emit(f"{marker}{i}. {s['id']}  ({s['count']} msgs)  {label}")
+            label = " ".join(label.split())  # a preview may span lines
+            row(f"{marker}{str(i).rjust(width)}. {s['id']}  "
+                f"({s['count']} msgs)  {label}")
         emit('Use /sessions load <n>|<id>, new, or rename <id> "Title".')
     elif sub == "load":
         if len(args) < 2:
