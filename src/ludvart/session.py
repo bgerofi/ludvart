@@ -469,6 +469,14 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
         "Reconnect to the MCP servers in ~/.ludvart/mcp.json and refresh their "
         "tool definitions.",
     ),
+    (
+        "/mcp_login <server>",
+        "Start OAuth authorization for an MCP server; prints the URL to open.",
+    ),
+    (
+        "/mcp_auth <server> <url>",
+        "Finish /mcp_login by pasting the URL the browser was redirected to.",
+    ),
     ("/sessions list", "List saved conversation sessions (current is marked *)."),
     ("/sessions load <n>|<id>", "Load and resume a saved session by number or id."),
     ("/sessions new", "Start a fresh, empty conversation in a new session file."),

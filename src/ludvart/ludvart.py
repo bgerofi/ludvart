@@ -63,7 +63,9 @@ DEFAULT_PREFIX = b"\x07"  # Ctrl-G
 #: model registry, the sessions, the MCP servers), so the client forwards them
 #: to the backend instead of handling them itself. Everything else -- helper
 #: installation, perf timings, approval -- is genuinely client-side.
-_BACKEND_COMMANDS = frozenset({"model", "sessions", "compact", "mcp_refresh"})
+_BACKEND_COMMANDS = frozenset(
+    {"model", "sessions", "compact", "mcp_refresh", "mcp_login", "mcp_auth"}
+)
 
 # In addition to the prefix commands, a single dedicated "summon" key opens the
 # AI panel in one keystroke. Ctrl-O (0x0F) is used because screen (Ctrl-A) and

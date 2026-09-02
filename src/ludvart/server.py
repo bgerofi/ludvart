@@ -234,6 +234,10 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
         _do_compact(core, channel, emit)
     elif cmd == "mcp_refresh":
         _do_mcp_refresh(core, emit)
+    elif cmd == "mcp_login":
+        _do_mcp_login(parts[1:], core, emit)
+    elif cmd == "mcp_auth":
+        _do_mcp_auth(parts[1:], core, emit)
     else:
         emit(f"[ludvart] command not supported in backend mode: /{cmd}")
     channel.send(message(MsgType.REPLY, text="", payload=result))
@@ -286,6 +290,57 @@ def _do_mcp_refresh(core, emit) -> None:
     core.tools = _agent_tools(core.mcp)
     core.system_prompt = system_prompt(core.tools)
     emit(report)
+
+
+def _do_mcp_login(args, core, emit) -> None:
+    """Run ``/mcp_login <server>``: print the URL the user must authorize at.
+
+    The browser is on the user's machine, not the backend host, so there is no
+    loopback port to catch the redirect. The flow stays parked mid-handshake
+    (the SDK is holding the PKCE verifier and ``state``) until ``/mcp_auth``
+    brings back what the browser landed on.
+    """
+    from .mcp import McpManager
+
+    if core.mcp is None:
+        core.mcp = McpManager()
+    if not args:
+        names = core.mcp.oauth_servers()
+        if not names:
+            emit("No OAuth-authenticated MCP servers in ~/.ludvart/mcp.json.")
+        else:
+            emit("Usage: /mcp_login <server>. Configured for OAuth:")
+            for name in names:
+                emit(f"  - {name}")
+        return
+    name = args[0]
+    try:
+        url = core.mcp.begin_login(name)
+    except Exception as exc:  # noqa: BLE001 - reported to the user
+        emit(f"Could not start authorization for {name!r}: {exc}")
+        return
+    emit(f"Open this URL in your browser and approve access for {name!r}:")
+    emit(url)
+    emit(
+        "The browser will then fail to load a localhost address -- that is "
+        "expected. Copy the whole URL from its address bar and run:"
+    )
+    emit(f"  /mcp_auth {name} <pasted-url>")
+
+
+def _do_mcp_auth(args, core, emit) -> None:
+    """Run ``/mcp_auth <server> <url>``: finish the parked authorization."""
+    if core.mcp is None or len(args) < 2:
+        emit("Usage: /mcp_auth <server> <redirected-url>")
+        return
+    name, pasted = args[0], " ".join(args[1:])
+    try:
+        core.mcp.complete_login(name, pasted)
+    except Exception as exc:  # noqa: BLE001 - reported to the user
+        emit(f"Authorization for {name!r} failed: {exc}")
+        return
+    emit(f"Authorized {name!r}. Rediscovering tools...")
+    _do_mcp_refresh(core, emit)
 
 
 def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None):
