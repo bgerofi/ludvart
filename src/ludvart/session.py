@@ -443,6 +443,8 @@ SLASH_COMMANDS: dict[str, list[str]] = {
     "compact": [],
     "help": [],
     "init_helpers": [],
+    "mcp_auth": [],
+    "mcp_login": [],
     "mcp_refresh": [],
     "model": ["add", "list", "remove", "use"],
     "perf": ["dump", "summary"],

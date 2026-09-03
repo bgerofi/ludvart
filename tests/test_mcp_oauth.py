@@ -526,12 +526,68 @@ def test_login_then_auth_makes_a_protected_servers_tools_usable(tmp_path: Path):
             ))
             assert "1/1 server(s) connected, 1 tool(s)" in done, done
             assert mgr.call_tool("mcp_gmail_whoami", {}) == f"Bearer {ACCESS_TOKEN}"
+
+            # Asking to log in again must actually re-authorize: the stored
+            # token would otherwise satisfy the SDK and no URL would appear.
+            again = run("mcp_login gmail")
+            assert any(line.startswith("http") for line in again), again
+            mgr.cancel_login("gmail")
         finally:
             mgr.close()
             httpd.shutdown()
             proc.terminate()
             proc.wait(timeout=10)
     print("login then auth makes a protected server's tools usable: OK")
+
+
+def test_a_failed_login_says_what_actually_went_wrong(tmp_path: Path):
+    """"Did it ask for authorization?" is a guess; the real error is knowable."""
+    import socket
+
+    with socket.socket() as probe:  # a port with nothing behind it
+        probe.bind(("127.0.0.1", 0))
+        dead = probe.getsockname()[1]
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"servers": {"gmail": {
+        "url": f"http://127.0.0.1:{dead}/mcp",
+        "oauth": {"clientId": "cid"},
+    }}}))
+    mgr = McpManager(config_file=str(cfg), connect_timeout=20.0)
+    with _home(tmp_path):
+        try:
+            started = time.time()
+            with pytest.raises(McpConfigError) as excinfo:
+                mgr.begin_login("gmail")
+        finally:
+            mgr.close()
+    # Reporting must not wait out the whole connect budget for an attempt that
+    # already failed.
+    assert time.time() - started < 10, time.time() - started
+    assert "authorization" not in str(excinfo.value).lower(), excinfo.value
+    print("a failed login says what actually went wrong: OK")
+
+
+def test_a_server_that_needs_no_login_is_not_reported_as_a_timeout(tmp_path: Path):
+    """Connecting straight through means the endpoint is not OAuth-protected."""
+    proc, upstream = _start_mcp_server(tmp_path / "server")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"servers": {"gmail": {
+        "url": upstream,
+        "oauth": {"clientId": "cid"},
+    }}}))
+    mgr = McpManager(config_file=str(cfg), connect_timeout=20.0)
+    with _home(tmp_path):
+        try:
+            started = time.time()
+            with pytest.raises(McpConfigError) as excinfo:
+                mgr.begin_login("gmail")
+        finally:
+            mgr.close()
+            proc.terminate()
+            proc.wait(timeout=10)
+    assert time.time() - started < 15, time.time() - started
+    assert "does not use OAuth" in str(excinfo.value), excinfo.value
+    print("a server that needs no login is not reported as a timeout: OK")
 
 
 def test_parse_settings_reads_the_documented_shape():
@@ -651,6 +707,8 @@ def main():
         test_an_unauthorized_server_says_how_to_authorize(root / "d")
         test_the_transport_is_given_the_provider_to_authorize_with(root / "h")
         test_login_then_auth_makes_a_protected_servers_tools_usable(root / "i")
+        test_a_failed_login_says_what_actually_went_wrong(root / "k")
+        test_a_server_that_needs_no_login_is_not_reported_as_a_timeout(root / "l")
         test_parse_settings_reads_the_documented_shape()
         test_parse_redirect_accepts_what_lands_in_a_paste_buffer()
         test_credentials_for_a_different_client_are_not_reused(root / "e")

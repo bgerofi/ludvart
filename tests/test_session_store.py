@@ -601,6 +601,16 @@ def test_resolve_session_ref():
     print("resolve_session_ref maps indices and passes ids through: OK")
 
 
+def test_complete_slash_mcp_commands():
+    """Every dispatchable command must be reachable by Tab, not just /help."""
+    assert complete_slash("/mcp_l") == "/mcp_login "
+    assert complete_slash("/mcp_a") == "/mcp_auth "
+    assert complete_slash("/mcp_r") == "/mcp_refresh "
+    # The three share a prefix, so Tab gets as far as it unambiguously can.
+    assert complete_slash("/mc") == "/mcp_"
+    print("complete_slash completes the MCP commands: OK")
+
+
 def test_complete_slash_rename():
     assert complete_slash("/sessions r") == "/sessions rename "
     # 'l' is still ambiguous (list/load), 'n' completes to new.
@@ -639,4 +649,5 @@ if __name__ == "__main__":
     test_parse_rename_args()
     test_resolve_session_ref()
     test_complete_slash_rename()
+    test_complete_slash_mcp_commands()
     print("\nALL session-store tests passed.")

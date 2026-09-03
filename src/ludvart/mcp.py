@@ -47,6 +47,7 @@ import json
 import os
 import re
 import threading
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
@@ -318,10 +319,14 @@ class McpManager:
         configs = load_config(self._config_file)
         if name not in configs:
             raise McpConfigError(f"no MCP server named {name!r} in mcp.json")
-        if mcpauth.parse_settings(configs[name], _expand) is None:
+        settings = mcpauth.parse_settings(configs[name], _expand)
+        if settings is None:
             raise McpConfigError(f"server {name!r} is not configured for OAuth")
 
         self.cancel_login(name)
+        # An explicit login means "authorize again". A token still on disk would
+        # satisfy the SDK, which would then never ask for an authorization URL.
+        mcpauth.FileTokenStorage(name, settings).forget()
         pending = mcpauth.PendingLogin(
             server=name,
             url_ready=threading.Event(),
@@ -357,12 +362,27 @@ class McpManager:
         self._loop.call_soon_threadsafe(start)  # type: ignore[union-attr]
         pending.state_holder = st
         # The URL only exists once the SDK has discovered the authorization
-        # server, so this waits for a couple of HTTP round-trips.
-        if not pending.url_ready.wait(self._connect_timeout):
+        # server, so this waits for a couple of HTTP round-trips. The attempt
+        # can also end first -- with a connection error, or with a connection
+        # that needed no authorization at all -- and saying which beats timing
+        # out and guessing.
+        deadline = time.monotonic() + self._connect_timeout
+        while not pending.url_ready.wait(0.05):
+            settled = fut.done()
+            if not settled and time.monotonic() < deadline:
+                continue
+            error = fut.result() if settled else ""
             self.cancel_login(name)
+            if error:
+                raise McpConfigError(error)
+            if settled:
+                raise McpConfigError(
+                    f"{name!r} connected without asking for authorization, so "
+                    "it does not use OAuth on this endpoint"
+                )
             raise McpConfigError(
-                st.error or f"{name!r} did not ask for authorization "
-                "(is it really an OAuth server?)"
+                f"{name!r} did not ask for authorization within "
+                f"{self._connect_timeout:.0f}s"
             )
         return pending.url
 
