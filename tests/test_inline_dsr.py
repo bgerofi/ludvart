@@ -20,7 +20,7 @@ from e2e_util import (
 _DSR = re.compile(rb"\x1b\[6n")
 
 
-def scenario(checks, ps1, label, partial=b""):
+def scenario(checks, ps1, label, partial=b"", ask_model=False):
     pid, m = pty.fork()
     if pid == 0:
         os.environ["PS1"] = ps1
@@ -52,23 +52,27 @@ def scenario(checks, ps1, label, partial=b""):
     time.sleep(0.3)
     os.write(m, b"a")
     add("panel opened", wait_for(m, sink, lambda: "ludvart>" in screen_text(screen), 10, settle=0.3))
-    os.write(m, b"What number is shown?")
-    time.sleep(0.4)
-    os.write(m, b"\r")
-    wait_for(m, sink, lambda: "Thinking" in screen_text(screen), 20, approver=approver)
-    add(
-        "the turn finished",
-        wait_for(
-            m,
-            sink,
-            lambda: "Thinking" not in screen_text(screen)
-            and "Calling" not in screen_text(screen),
-            90,
-            approver=approver,
-            settle=1.0,
-        ),
-    )
-    add("the model read the screen through the emulated terminal", "42" in screen_text(screen))
+    # What varies between scenarios is the prompt shape, which only the drawing
+    # and the line editor depend on. One live turn is enough to show the model
+    # reads the emulated screen; repeating it per shape just buys latency.
+    if ask_model:
+        os.write(m, b"What number is shown?")
+        time.sleep(0.4)
+        os.write(m, b"\r")
+        wait_for(m, sink, lambda: "Thinking" in screen_text(screen), 20, approver=approver)
+        add(
+            "the turn finished",
+            wait_for(
+                m,
+                sink,
+                lambda: "Thinking" not in screen_text(screen)
+                and "Calling" not in screen_text(screen),
+                90,
+                approver=approver,
+                settle=1.0,
+            ),
+        )
+        add("the model read the screen through the emulated terminal", "42" in screen_text(screen))
 
     os.write(m, b"Z")  # prove line editor intact
     wait_for(m, sink, lambda: False, 0.6)
@@ -89,7 +93,7 @@ def scenario(checks, ps1, label, partial=b""):
 
 def main():
     checks = Checks()
-    scenario(checks, "$ ", "SINGLE-LINE PROMPT")
+    scenario(checks, "$ ", "SINGLE-LINE PROMPT", ask_model=True)
     scenario(checks, "[demo]\\n$ ", "TWO-LINE PROMPT")
     scenario(checks, "$ ", "SINGLE-LINE + PARTIAL BUFFER 'ls -la'", partial=b"ls -la")
     checks.report()

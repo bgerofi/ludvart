@@ -22,6 +22,12 @@ def show(screen, label):
 
 
 def main():
+    # Our own README in the throwaway cwd, holding a number the answer has to be
+    # derived from: the marker alone would also appear in the cat output, so
+    # only arithmetic proves the settled screen actually came back.
+    with open("README.md", "w") as fh:
+        fh.write("Zorblax logs 7 stork sightings per hour.\n")
+
     pid, m = pty.fork()
     if pid == 0:
         os.environ["PS1"] = "$ "
@@ -43,8 +49,8 @@ def main():
         wait_for(m, stream.feed, lambda: "ludvart>" in screen_text(screen), 10, settle=0.3),
     )
 
-    os.write(m, b"What is this project about based on the README? "
-                b"Read it in the terminal first.")
+    os.write(m, b"According to the README, how many stork sightings per hour, "
+                b"times 6? Read the README in the terminal first.")
     time.sleep(0.4)
     os.write(m, b"\r")
     idle = wait_for(
@@ -56,15 +62,15 @@ def main():
         approver=approver,
         settle=1.0,
     )
-    show(screen, "reply (should summarize README, not ask user)")
+    show(screen, "reply (should answer 42 from the README, not ask user)")
     panel = screen_text(screen)
     checks.add("the model read the README through the terminal", approver.approved)
     checks.add("the turn settled and finished", idle)
     # The point of the test: the settled screen came back, so the model answers
     # instead of asking the user to paste the file.
     checks.add(
-        "the model answered instead of asking for the contents",
-        "ludvart" in panel.lower(),
+        "the model answered from the file it read (7 * 6 = 42)",
+        "42" in panel,
         f"panel showed:\n{panel}",
     )
 
