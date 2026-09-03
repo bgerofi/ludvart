@@ -1,35 +1,42 @@
 """OAuth 2.1 authorization for remote MCP servers.
 
-Some MCP servers (hosted ones especially) answer an unauthenticated request
-with ``401`` and an OAuth challenge instead of serving tools. The ``mcp`` SDK
-ships the protocol half of the answer -- :class:`~mcp.client.auth.OAuthClientProvider`
-is an :class:`httpx.Auth` that discovers the authorization server, runs PKCE,
-validates ``state`` and refreshes expired tokens -- but it delegates the two
-steps that need a human: showing the authorization URL and obtaining the code
-the browser is redirected with.
+Some MCP servers refuse unauthenticated work with ``401`` and an OAuth
+challenge. Where that challenge appears varies: a strict server rejects the
+``initialize`` handshake, while Google's Gmail MCP endpoint answers discovery in
+the clear and only demands a token once a tool is actually called. ludvart
+therefore does not wait to be challenged -- ``/mcp_login`` starts from the
+server's own metadata (RFC 9728 protected-resource, then RFC 8414 authorization
+server) and runs the authorization code grant with PKCE itself.
 
 ludvart's backend usually runs on a different host from the browser, so a
-loopback listener would be listening on the wrong machine. Instead the
-authorization is split across two panel commands: ``/mcp_login <server>`` prints
-the URL, and ``/mcp_auth <redirected-url>`` hands back what the browser ended up
-on. The redirect target deliberately points at a port nothing is listening on --
-the browser shows a connection error, and the address bar holds the ``code`` and
+loopback listener would be listening on the wrong machine. The authorization is
+split across two panel commands instead: ``/mcp_login <server>`` prints the URL,
+and ``/mcp_auth <server> <url>`` hands back what the browser ended up on. The
+redirect target deliberately points at a port nothing is listening on -- the
+browser shows a connection error, and the address bar holds the ``code`` and
 ``state`` to copy.
 
-Nothing here is interactive during startup: a server whose tokens are missing or
-unusable fails discovery with :class:`NeedsAuthorization` so the backend keeps
-serving with its other tools, rather than blocking on a prompt no one can see.
+Requests then carry the stored token via :class:`AuthTransport`, which renews it
+from the refresh token when it expires. Nothing here is interactive outside
+those two commands: a request with no usable token still goes out bare, so
+discovery keeps working on a server that allows it, and only a ``401`` turns
+into a JSON-RPC error naming the command to run.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
+
+import httpx
 
 #: Where the authorization server is told to send the browser. Nothing listens
 #: there: the flow is completed by pasting the URL the browser landed on, and a
@@ -38,10 +45,7 @@ from urllib.parse import parse_qs, urlparse
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:33418/ludvart/callback"
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]")
-
-
-class NeedsAuthorization(RuntimeError):
-    """Raised when a server needs an interactive login that cannot run now."""
+_HTTP_TIMEOUT = 30.0
 
 
 def auth_dir() -> str:
@@ -58,6 +62,7 @@ class OAuthSettings:
     scopes: str = ""
     redirect_uri: str = DEFAULT_REDIRECT_URI
     client_name: str = "ludvart"
+    auth_params: dict = field(default_factory=dict)
 
     @property
     def dynamic(self) -> bool:
@@ -89,12 +94,14 @@ def parse_settings(cfg: dict, expand) -> OAuthSettings | None:
     scopes: Any = raw.get("scopes") or raw.get("scope") or ""
     if isinstance(scopes, (list, tuple)):
         scopes = " ".join(str(s) for s in scopes)
+    extra = raw.get("authorizationParams") or raw.get("authorization_params") or {}
     return OAuthSettings(
         client_id=text("clientId", "client_id"),
         client_secret=text("clientSecret", "client_secret"),
         scopes=expand(str(scopes)).strip(),
         redirect_uri=text("redirectUri", "redirect_uri") or DEFAULT_REDIRECT_URI,
         client_name=text("clientName", "client_name") or "ludvart",
+        auth_params={str(k): expand(str(v)) for k, v in dict(extra).items()},
     )
 
 
@@ -122,13 +129,11 @@ def parse_redirect(pasted: str) -> tuple[str, str | None]:
     return code, state
 
 
-class FileTokenStorage:
-    """Persist one server's tokens and client registration under ``~/.ludvart``.
+# -- token storage ----------------------------------------------------------
 
-    Implements the SDK's ``TokenStorage`` protocol. Pre-registered credentials
-    from ``mcp.json`` are handed over as if they had been stored, which is what
-    stops the SDK from attempting dynamic client registration.
-    """
+
+class TokenStore:
+    """One server's tokens and dynamic registration, under ``~/.ludvart``."""
 
     def __init__(self, server: str, settings: OAuthSettings) -> None:
         self._settings = settings
@@ -139,83 +144,7 @@ class FileTokenStorage:
     def path(self) -> str:
         return self._path
 
-    def has_tokens(self) -> bool:
-        return bool(self._read().get("tokens"))
-
-    def forget(self) -> None:
-        try:
-            os.remove(self._path)
-        except FileNotFoundError:
-            pass
-
-    # -- TokenStorage protocol ---------------------------------------------
-
-    async def get_tokens(self):
-        from mcp.shared.auth import OAuthToken
-
-        data = self._read()
-        stored = data.get("tokens")
-        if not stored:
-            return None
-        tokens = OAuthToken.model_validate(stored)
-        # The SDK only tracks expiry for tokens it fetched itself: one loaded
-        # from disk looks valid forever. Handing back a stale access token would
-        # earn a 401, which the SDK reads as "never authorized" and answers with
-        # a whole new login -- so ludvart would demand /mcp_login every time an
-        # access token aged out. Withhold it instead and let the refresh token,
-        # which is the reason we store anything at all, do its job.
-        if tokens.refresh_token and self._expired(data):
-            return tokens.model_copy(update={"access_token": ""})
-        return tokens
-
-    async def set_tokens(self, tokens) -> None:
-        self._write(
-            tokens=json.loads(tokens.model_dump_json(exclude_none=True)),
-            token_expires_at=(
-                time.time() + tokens.expires_in - 60 if tokens.expires_in else 0
-            ),
-        )
-
-    async def get_client_info(self):
-        from mcp.shared.auth import OAuthClientInformationFull
-
-        configured = self._configured_client_info()
-        if configured is not None:
-            return configured
-        data = self._read().get("client_info")
-        if not data:
-            return None
-        try:
-            return OAuthClientInformationFull.model_validate(data)
-        except ValueError:
-            return None
-
-    async def set_client_info(self, client_info) -> None:
-        if not self._settings.dynamic:
-            return  # configured credentials are the source of truth
-        self._write(
-            client_info=json.loads(client_info.model_dump_json(exclude_none=True)),
-        )
-
-    # -- file handling ------------------------------------------------------
-
-    def _configured_client_info(self):
-        if self._settings.dynamic:
-            return None
-        from mcp.shared.auth import OAuthClientInformationFull
-
-        return OAuthClientInformationFull(
-            client_id=self._settings.client_id,
-            client_secret=self._settings.client_secret or None,
-            redirect_uris=[self._settings.redirect_uri],
-            token_endpoint_auth_method=(
-                "client_secret_post" if self._settings.client_secret else "none"
-            ),
-            scope=self._settings.scopes or None,
-            client_name=self._settings.client_name,
-        )
-
-    def _read(self) -> dict:
+    def read(self) -> dict:
         try:
             with open(self._path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -229,15 +158,43 @@ class FileTokenStorage:
             return {}
         return data
 
-    @staticmethod
-    def _expired(data: dict) -> bool:
-        expires_at = data.get("token_expires_at")
-        # A server that never says how long its tokens last is taken at its
-        # word; only a deadline we were actually given can pass.
-        return bool(expires_at) and time.time() >= float(expires_at)
+    def has_tokens(self) -> bool:
+        return bool(self.read().get("access_token"))
 
-    def _write(self, **fields: Any) -> None:
-        data = self._read()
+    def forget(self) -> None:
+        try:
+            os.remove(self._path)
+        except FileNotFoundError:
+            pass
+
+    def client(self) -> tuple[str, str]:
+        """The client credentials to use: configured ones, else registered."""
+        if not self._settings.dynamic:
+            return self._settings.client_id, self._settings.client_secret
+        data = self.read()
+        return data.get("registered_id", ""), data.get("registered_secret", "")
+
+    def save_client(self, client_id: str, client_secret: str) -> None:
+        self.write(registered_id=client_id, registered_secret=client_secret)
+
+    def save_tokens(self, payload: dict, token_endpoint: str, previous=None) -> dict:
+        expires_in = payload.get("expires_in")
+        return self.write(
+            access_token=str(payload.get("access_token") or ""),
+            # Providers may omit the refresh token when renewing, which does not
+            # mean the one we already hold has stopped working.
+            refresh_token=str(
+                payload.get("refresh_token")
+                or (previous or {}).get("refresh_token")
+                or ""
+            ),
+            scope=str(payload.get("scope") or ""),
+            token_endpoint=token_endpoint,
+            expires_at=time.time() + float(expires_in) - 60 if expires_in else 0,
+        )
+
+    def write(self, **fields: Any) -> dict:
+        data = self.read()
         data.update(fields)
         data["client_id_hint"] = self._settings.client_id
         data["updated"] = int(time.time())
@@ -253,68 +210,334 @@ class FileTokenStorage:
             os.unlink(tmp)
             raise
         os.replace(tmp, self._path)
+        return data
+
+
+def _stale(data: dict) -> bool:
+    expires_at = data.get("expires_at")
+    # A server that never says how long its token lasts is taken at its word;
+    # only a deadline we were actually given can pass.
+    return bool(expires_at) and time.time() >= float(expires_at)
+
+
+# -- discovery --------------------------------------------------------------
+
+
+@dataclass
+class Endpoints:
+    """Where to send the user, and where to redeem the code they bring back."""
+
+    authorization: str
+    token: str
+    registration: str = ""
+    scopes: str = ""
+
+
+def _fetch_json(client: httpx.Client, urls: list[str]) -> dict | None:
+    for url in urls:
+        try:
+            response = client.get(url, headers={"Accept": "application/json"})
+        except httpx.HTTPError:
+            continue
+        if response.status_code != 200:
+            continue
+        try:
+            data = response.json()
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def discover(url: str) -> Endpoints:
+    """Find the authorization server for an MCP endpoint and read its metadata."""
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path.rstrip("/")
+    with httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
+        # RFC 9728 puts the well-known segment before the resource path, so the
+        # document for /mcp/v1 lives at /.well-known/...-resource/mcp/v1.
+        prm = _fetch_json(client, [
+            f"{origin}/.well-known/oauth-protected-resource{path}",
+            f"{origin}/.well-known/oauth-protected-resource",
+        ]) or {}
+        servers = prm.get("authorization_servers") or []
+        issuer = str(servers[0]).rstrip("/") if servers else origin
+        meta = _fetch_json(client, [
+            f"{issuer}/.well-known/oauth-authorization-server",
+            f"{issuer}/.well-known/openid-configuration",
+        ])
+    if not meta or not meta.get("authorization_endpoint"):
+        raise RuntimeError(
+            f"no OAuth metadata at {issuer} (is {url} an OAuth-protected server?)"
+        )
+    return Endpoints(
+        authorization=str(meta["authorization_endpoint"]),
+        token=str(meta.get("token_endpoint") or ""),
+        registration=str(meta.get("registration_endpoint") or ""),
+        scopes=" ".join(str(s) for s in prm.get("scopes_supported") or []),
+    )
+
+
+def _register(endpoints: Endpoints, settings: OAuthSettings, scope: str):
+    """Register a client on the fly (RFC 7591) with a server that allows it."""
+    if not endpoints.registration:
+        raise RuntimeError(
+            "no clientId configured and the server offers no dynamic "
+            "client registration"
+        )
+    body: dict[str, Any] = {
+        "client_name": settings.client_name,
+        "redirect_uris": [settings.redirect_uri],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }
+    if scope:
+        body["scope"] = scope
+    response = httpx.post(endpoints.registration, json=body, timeout=_HTTP_TIMEOUT)
+    if response.status_code >= 400:
+        raise RuntimeError(f"client registration failed: {_error_detail(response)}")
+    data = response.json()
+    return str(data.get("client_id") or ""), str(data.get("client_secret") or "")
+
+
+# -- the authorization code grant -------------------------------------------
 
 
 @dataclass
 class PendingLogin:
-    """One interactive authorization in progress, shared across two commands."""
+    """One authorization in progress, carried between the two panel commands."""
 
     server: str
+    settings: OAuthSettings
+    endpoints: Endpoints
+    client_id: str
+    client_secret: str
+    verifier: str
+    state: str
+    scope: str
     url: str = ""
-    code: str = ""
-    state: str | None = None
-    url_ready: Any = field(default=None)
-    code_ready: Any = field(default=None)
-    #: Resolves when the parked connection attempt finishes, with its error.
-    connect: Any = field(default=None)
-    #: The server state whose task is parked in the flow, so it can be cancelled.
-    state_holder: Any = field(default=None)
 
 
-def build_auth(server: str, url: str, settings: OAuthSettings, pending=None):
-    """Return an ``httpx.Auth`` that authorizes requests to ``url``.
+def _default_auth_params(endpoint: str) -> dict:
+    host = urlparse(endpoint).hostname or ""
+    # Google issues a refresh token only when offline access is asked for, and
+    # re-consents only when told to; without both, /mcp_login would have to be
+    # repeated every time the access token aged out.
+    if host == "accounts.google.com":
+        return {"access_type": "offline", "prompt": "consent"}
+    return {}
 
-    With ``pending`` set, an authorization the SDK decides it needs is carried
-    out interactively through that record; without it, needing one raises
-    :class:`NeedsAuthorization` instead of waiting for a human who is not there.
-    """
-    from mcp.client.auth import OAuthClientProvider
-    from mcp.shared.auth import OAuthClientMetadata
 
-    storage = FileTokenStorage(server, settings)
+def start_login(server: str, url: str, settings: OAuthSettings) -> PendingLogin:
+    """Discover the authorization server and build the URL the user must visit."""
+    endpoints = discover(url)
+    scope = settings.scopes or endpoints.scopes
+    store = TokenStore(server, settings)
+    # A token still on disk would keep working; an explicit login means the user
+    # wants a new one (access revoked, different scopes, another account).
+    store.forget()
+    client_id, client_secret = settings.client_id, settings.client_secret
+    if settings.dynamic:
+        client_id, client_secret = _register(endpoints, settings, scope)
+        store.save_client(client_id, client_secret)
 
-    async def redirect_handler(auth_url: str) -> None:
-        if pending is None:
-            raise NeedsAuthorization(
-                f"'{server}' needs authorization; run /mcp_login {server}"
-            )
-        pending.url = auth_url
-        pending.url_ready.set()
-
-    async def callback_handler() -> tuple[str, str | None]:
-        if pending is None:  # unreachable: redirect_handler runs first
-            raise NeedsAuthorization(f"'{server}' needs authorization")
-        import anyio
-
-        with anyio.move_on_after(600) as scope:
-            await anyio.to_thread.run_sync(pending.code_ready.wait)
-        if scope.cancelled_caught or not pending.code:
-            raise NeedsAuthorization(
-                f"timed out waiting for /mcp_auth for '{server}'"
-            )
-        return pending.code, pending.state
-
-    return OAuthClientProvider(
-        server_url=url,
-        client_metadata=OAuthClientMetadata(
-            redirect_uris=[settings.redirect_uri],
-            client_name=settings.client_name,
-            scope=settings.scopes or None,
-            token_endpoint_auth_method=(
-                "client_secret_post" if settings.client_secret else None
-            ),
-        ),
-        storage=storage,
-        redirect_handler=redirect_handler,
-        callback_handler=callback_handler,
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).decode("ascii").rstrip("=")
+    state = secrets.token_urlsafe(24)
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": settings.redirect_uri,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    if scope:
+        params["scope"] = scope
+    params.update(settings.auth_params or _default_auth_params(endpoints.authorization))
+    joiner = "&" if "?" in endpoints.authorization else "?"
+    return PendingLogin(
+        server=server,
+        settings=settings,
+        endpoints=endpoints,
+        client_id=client_id,
+        client_secret=client_secret,
+        verifier=verifier,
+        state=state,
+        scope=scope,
+        url=endpoints.authorization + joiner + urlencode(params),
     )
+
+
+def finish_login(pending: PendingLogin, pasted: str) -> None:
+    """Redeem the code the browser was redirected with, and store the tokens."""
+    code, state = parse_redirect(pasted)
+    if state is not None and not secrets.compare_digest(state, pending.state):
+        raise RuntimeError("that URL is from a different login attempt (state mismatch)")
+    if not pending.endpoints.token:
+        raise RuntimeError("the authorization server advertises no token endpoint")
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": pending.settings.redirect_uri,
+        "client_id": pending.client_id,
+        "code_verifier": pending.verifier,
+    }
+    if pending.client_secret:
+        form["client_secret"] = pending.client_secret
+    response = httpx.post(
+        pending.endpoints.token,
+        data=form,
+        headers={"Accept": "application/json"},
+        timeout=_HTTP_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"token exchange failed: {_error_detail(response)}")
+    payload = response.json()
+    if not payload.get("access_token"):
+        raise RuntimeError("the token endpoint returned no access token")
+    TokenStore(pending.server, pending.settings).save_tokens(
+        payload, pending.endpoints.token
+    )
+
+
+def _error_detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and body.get("error"):
+        detail = body.get("error_description") or ""
+        return f"{body['error']}: {detail}" if detail else str(body["error"])
+    return f"HTTP {response.status_code}: {response.text[:200]}"
+
+
+# -- attaching the token to MCP traffic -------------------------------------
+
+
+class AuthTransport(httpx.AsyncBaseTransport):
+    """Carry the stored token on MCP traffic, renewing it when it expires.
+
+    This is an HTTP *transport* rather than an :class:`httpx.Auth` because of
+    how the MCP SDK sends requests: each one runs in its own task inside the
+    transport's task group, so an exception raised while sending never reaches
+    the caller -- ``session.call_tool`` simply waits forever. Down here a
+    failure can be turned into a JSON-RPC error instead, which the session
+    delivers as an ordinary tool error saying which command would fix it.
+
+    A request with no usable token is still sent bare: servers differ on how
+    much they allow unauthenticated -- Google serves its whole tool list -- and
+    letting it through is what makes those tools discoverable before a login.
+    """
+
+    def __init__(self, server: str, settings: OAuthSettings, inner=None) -> None:
+        self._server = server
+        self._store = TokenStore(server, settings)
+        # A client, not a bare transport: httpx only applies the environment's
+        # proxy settings to clients it configures itself, and handing one an
+        # explicit transport= skips that, so every request would go direct.
+        self._inner = inner or httpx.AsyncClient(
+            follow_redirects=True, timeout=_HTTP_TIMEOUT
+        )
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    async def handle_async_request(self, request: httpx.Request):
+        body = await request.aread()
+        data = self._store.read()
+        if _stale(data) and data.get("refresh_token"):
+            data = await self._refresh(data)
+        response = await self._send(request, body, data)
+        if response.status_code == 401 and data.get("refresh_token"):
+            await response.aclose()
+            data = await self._refresh(data)
+            if data.get("access_token"):
+                response = await self._send(request, body, data)
+        if response.status_code != 401:
+            return response
+        await response.aread()
+        await response.aclose()
+        return self._needs_login(body)
+
+    async def _send(self, request: httpx.Request, body: bytes, data: dict):
+        headers = dict(request.headers)
+        token = data.get("access_token")
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+        else:
+            headers.pop("authorization", None)
+        return await self._inner.send(
+            httpx.Request(
+                request.method,
+                request.url,
+                headers=headers,
+                content=body,
+                extensions=request.extensions,
+            ),
+            stream=True,
+        )
+
+    def _needs_login(self, body: bytes) -> httpx.Response:
+        """Turn a dead end into an answer the model and the user can act on."""
+        message = (
+            f"MCP server '{self._server}' needs authorization; "
+            f"run /mcp_login {self._server}"
+        )
+        try:
+            request_id = json.loads(body)["id"]
+        except (ValueError, TypeError, KeyError):
+            # A notification has no id to answer, so nothing can be said in
+            # band; the plain 401 is the most honest thing to return.
+            return httpx.Response(401, json={"error": message})
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32001, "message": message},
+        })
+
+    async def _refresh(self, data: dict) -> dict:
+        client_id, client_secret = self._store.client()
+        form = {
+            "grant_type": "refresh_token",
+            "refresh_token": data.get("refresh_token", ""),
+            "client_id": client_id,
+        }
+        if client_secret:
+            form["client_secret"] = client_secret
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                response = await client.post(
+                    data.get("token_endpoint", ""),
+                    data=form,
+                    headers={"Accept": "application/json"},
+                )
+            payload = response.json() if response.status_code < 400 else {}
+        except (httpx.HTTPError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict) or not payload.get("access_token"):
+            return {}  # the refresh token is dead; only a new login helps
+        return self._store.save_tokens(
+            payload, data.get("token_endpoint", ""), data
+        )
+
+
+def client_factory(server: str, settings: OAuthSettings):
+    """Build the ``httpx_client_factory`` the MCP SDK should use for a server."""
+
+    def make(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout if timeout is not None else httpx.Timeout(30.0),
+            auth=auth,
+            follow_redirects=True,
+            transport=AuthTransport(server, settings),
+        )
+
+    return make
+

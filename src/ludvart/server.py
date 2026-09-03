@@ -296,9 +296,8 @@ def _do_mcp_login(args, core, emit) -> None:
     """Run ``/mcp_login <server>``: print the URL the user must authorize at.
 
     The browser is on the user's machine, not the backend host, so there is no
-    loopback port to catch the redirect. The flow stays parked mid-handshake
-    (the SDK is holding the PKCE verifier and ``state``) until ``/mcp_auth``
-    brings back what the browser landed on.
+    loopback port to catch the redirect. ``/mcp_auth`` brings back what the
+    browser landed on.
     """
     from .mcp import McpManager
 
@@ -315,12 +314,14 @@ def _do_mcp_login(args, core, emit) -> None:
         return
     name = args[0]
     try:
-        url = core.mcp.begin_login(name)
+        pending = core.mcp.begin_login(name)
     except Exception as exc:  # noqa: BLE001 - reported to the user
         emit(f"Could not start authorization for {name!r}: {exc}")
         return
     emit(f"Open this URL in your browser and approve access for {name!r}:")
-    emit(url)
+    emit(pending.url)
+    if pending.scope:
+        emit(f"Scopes requested: {pending.scope}")
     emit(
         "The browser will then fail to load a localhost address -- that is "
         "expected. Copy the whole URL from its address bar and run:"
@@ -329,7 +330,7 @@ def _do_mcp_login(args, core, emit) -> None:
 
 
 def _do_mcp_auth(args, core, emit) -> None:
-    """Run ``/mcp_auth <server> <url>``: finish the parked authorization."""
+    """Run ``/mcp_auth <server> <url>``: redeem the code the browser came back with."""
     if core.mcp is None or len(args) < 2:
         emit("Usage: /mcp_auth <server> <redirected-url>")
         return

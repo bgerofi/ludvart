@@ -16,8 +16,13 @@ Authorization
 A remote server that answers with ``401`` and an OAuth challenge is handled by
 adding an ``oauth`` block to its entry -- ``true`` to register a client on the
 fly, or ``clientId`` / ``clientSecret`` / ``scopes`` when the provider issued
-credentials in advance. See :mod:`ludvart.mcpauth`; the interactive half runs
-through the ``/mcp_login`` and ``/mcp_auth`` commands, never during startup.
+credentials in advance. Where the challenge appears differs between servers:
+some reject ``initialize``, while Google's Gmail endpoint serves its whole tool
+list in the clear and only refuses ``tools/call``. ``/mcp_login`` therefore
+discovers the authorization server from metadata rather than waiting to be
+challenged, and a tool called without a usable token answers with an error
+saying so. See :mod:`ludvart.mcpauth`; the interactive half runs through the
+``/mcp_login`` and ``/mcp_auth`` commands, never during startup.
 
 Discovery
 ---------
@@ -47,7 +52,6 @@ import json
 import os
 import re
 import threading
-import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
@@ -307,84 +311,29 @@ class McpManager:
                 continue
         return names
 
-    def begin_login(self, name: str) -> str:
-        """Start an interactive authorization and return the URL to visit.
+    def begin_login(self, name: str) -> mcpauth.PendingLogin:
+        """Start an interactive authorization; the result carries the URL to visit.
 
-        The connection attempt is left running on the event-loop thread, parked
-        inside the OAuth flow until :meth:`complete_login` supplies the code, so
-        the SDK keeps the PKCE verifier and ``state`` it generated.
+        Nothing is connected here. The server is only asked for its metadata,
+        because whether it challenges a connection at all varies -- some do it
+        at ``initialize``, others not until a tool is called.
         """
-        if not available():
-            raise RuntimeError(f"mcp SDK not available: {_IMPORT_ERROR}")
         configs = load_config(self._config_file)
         if name not in configs:
             raise McpConfigError(f"no MCP server named {name!r} in mcp.json")
-        settings = mcpauth.parse_settings(configs[name], _expand)
+        cfg = configs[name]
+        settings = mcpauth.parse_settings(cfg, _expand)
         if settings is None:
             raise McpConfigError(f"server {name!r} is not configured for OAuth")
-
-        self.cancel_login(name)
-        # An explicit login means "authorize again". A token still on disk would
-        # satisfy the SDK, which would then never ask for an authorization URL.
-        mcpauth.FileTokenStorage(name, settings).forget()
-        pending = mcpauth.PendingLogin(
-            server=name,
-            url_ready=threading.Event(),
-            code_ready=threading.Event(),
-        )
+        url = _expand(str(cfg.get("url") or cfg.get("serverUrl") or ""))
+        if not url:
+            raise McpConfigError(f"server {name!r} has no url to authorize against")
+        try:
+            pending = mcpauth.start_login(name, url, settings)
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            raise McpConfigError(_describe(exc)) from None
         self._pending[name] = pending
-        self._ensure_loop()
-        st = _ServerState(name=name, cfg=configs[name])
-        st.queue = asyncio.Queue()
-        fut = concurrent.futures.Future()
-        pending.connect = fut
-
-        def start() -> None:
-            ready = self._loop.create_future()  # type: ignore[union-attr]
-            st.ready = ready
-            st.task = self._loop.create_task(self._worker(st))  # type: ignore[union-attr]
-
-            def settled(f) -> None:
-                if fut.done():
-                    return
-                exc = None if f.cancelled() else f.exception()
-                fut.set_result(_describe(exc) if exc else None)
-
-            ready.add_done_callback(settled)
-            # The worker parks on its command queue once connected, so only a
-            # task that ends *before* discovery is a failure to report.
-            st.task.add_done_callback(
-                lambda t: fut.set_result(st.error or "connection closed")
-                if not fut.done()
-                else None
-            )
-
-        self._loop.call_soon_threadsafe(start)  # type: ignore[union-attr]
-        pending.state_holder = st
-        # The URL only exists once the SDK has discovered the authorization
-        # server, so this waits for a couple of HTTP round-trips. The attempt
-        # can also end first -- with a connection error, or with a connection
-        # that needed no authorization at all -- and saying which beats timing
-        # out and guessing.
-        deadline = time.monotonic() + self._connect_timeout
-        while not pending.url_ready.wait(0.05):
-            settled = fut.done()
-            if not settled and time.monotonic() < deadline:
-                continue
-            error = fut.result() if settled else ""
-            self.cancel_login(name)
-            if error:
-                raise McpConfigError(error)
-            if settled:
-                raise McpConfigError(
-                    f"{name!r} connected without asking for authorization, so "
-                    "it does not use OAuth on this endpoint"
-                )
-            raise McpConfigError(
-                f"{name!r} did not ask for authorization within "
-                f"{self._connect_timeout:.0f}s"
-            )
-        return pending.url
+        return pending
 
     def complete_login(self, name: str, pasted: str) -> None:
         """Hand the pasted redirect back to a login started by :meth:`begin_login`.
@@ -395,31 +344,16 @@ class McpManager:
         pending = self._pending.get(name)
         if pending is None:
             raise McpConfigError(f"no login in progress for {name!r}")
-        code, state = mcpauth.parse_redirect(pasted)
-        pending.code, pending.state = code, state
-        pending.code_ready.set()
         try:
-            error = pending.connect.result(timeout=self._connect_timeout + 30.0)
-        except concurrent.futures.TimeoutError:
-            raise McpConfigError("timed out completing the authorization") from None
+            mcpauth.finish_login(pending, pasted)
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            raise McpConfigError(_describe(exc)) from None
         finally:
             self._pending.pop(name, None)
-            self._cancel_task(pending)
-        if error:
-            raise McpConfigError(error)
 
     def cancel_login(self, name: str) -> None:
         """Abandon a login left half-finished by an earlier attempt."""
-        pending = self._pending.pop(name, None)
-        if pending is None:
-            return
-        pending.code_ready.set()  # unpark the waiting flow so its task can end
-        self._cancel_task(pending)
-
-    def _cancel_task(self, pending) -> None:
-        st = pending.state_holder
-        if st is not None and st.task is not None and self._loop is not None:
-            self._loop.call_soon_threadsafe(st.task.cancel)
+        self._pending.pop(name, None)
 
     def call_tool(self, public_name: str, arguments: dict | None) -> str:
         """Invoke a namespaced MCP tool and return its text result."""
@@ -444,7 +378,7 @@ class McpManager:
                 f"{self._call_timeout:.0f}s"
             )
         except Exception as exc:  # noqa: BLE001 - reported to the model
-            return f"[ludvart] MCP tool '{public_name}' failed: {exc}"
+            return f"[ludvart] MCP tool '{public_name}' failed: {_describe(exc)}"
         return _result_to_text(result)
 
     def close(self) -> None:
@@ -602,26 +536,27 @@ class McpManager:
                 str(k): _expand(str(v))
                 for k, v in (cfg.get("headers") or {}).items()
             } or None
-            auth = self._build_auth(name, cfg, url)
+            factory = self._client_factory(name, cfg)
+            extra = {"httpx_client_factory": factory} if factory else {}
             if str(cfg.get("type", "")).lower() == "sse":
                 read, write = await stack.enter_async_context(
-                    sse_client(url, headers=headers, auth=auth)
+                    sse_client(url, headers=headers, **extra)
                 )
             else:
                 read, write, _ = await stack.enter_async_context(
-                    streamablehttp_client(url, headers=headers, auth=auth)
+                    streamablehttp_client(url, headers=headers, **extra)
                 )
             return read, write
         raise McpConfigError(
             "server entry needs 'command' (stdio) or 'url' (http/sse)"
         )
 
-    def _build_auth(self, name: str, cfg: dict, url: str):
-        """The OAuth provider for this server, or ``None`` if it uses none."""
+    def _client_factory(self, name: str, cfg: dict):
+        """The HTTP client factory that authorizes this server, or ``None``."""
         settings = mcpauth.parse_settings(cfg, _expand)
         if settings is None:
             return None
-        return mcpauth.build_auth(name, url, settings, self._pending.get(name))
+        return mcpauth.client_factory(name, settings)
 
     async def _call(self, st: _ServerState, tool_name: str, args: dict):
         fut = self._loop.create_future()  # type: ignore[union-attr]
