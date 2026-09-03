@@ -221,6 +221,13 @@ def test_the_settle_cap_is_not_blown_by_a_status_check():
     relay = RelayPTY.__new__(RelayPTY)
     relay.screen = PromptScreen()
     relay._backend_client = object()
+    # What is under test is the ratio between the cap, the reserve and the cost
+    # of one check, so scale all three down instead of sleeping out the real
+    # 20s cap. test_caps_are_sane covers the shipped values.
+    relay.SETTLE_MAX_WAIT = 2.0
+    relay.SETTLE_QUIET_WINDOW = 0.13
+    relay.SETTLE_CHECK_RESERVE = 0.6
+    relay.SETTLE_POLL = 0.01
     seq = ["before", "after", "after"]
     relay._safe_snapshot = lambda: seq.pop(0) if len(seq) > 1 else seq[0]
     relay._prompt_returned = lambda prefix: False
@@ -228,7 +235,7 @@ def test_the_settle_cap_is_not_blown_by_a_status_check():
 
     def slow_check(injected, text, before=""):
         checks.append(time.time())
-        time.sleep(1.0)
+        time.sleep(0.1)
         return False  # never finished, so it keeps asking
 
     relay._injection_finished = slow_check
@@ -237,12 +244,12 @@ def test_the_settle_cap_is_not_blown_by_a_status_check():
     relay._wait_for_injection_to_settle("x", prompt_prefix="p")
     elapsed = time.time() - start
     assert checks, "the status check never ran"
-    assert elapsed <= RelayPTY.SETTLE_MAX_WAIT, (
-        f"waited {elapsed:.1f}s against a {RelayPTY.SETTLE_MAX_WAIT}s cap"
+    assert elapsed <= relay.SETTLE_MAX_WAIT, (
+        f"waited {elapsed:.1f}s against a {relay.SETTLE_MAX_WAIT}s cap"
     )
     # The last check must have started with room to finish inside the cap.
-    room = RelayPTY.SETTLE_MAX_WAIT - (checks[-1] - start)
-    assert room >= RelayPTY.SETTLE_CHECK_RESERVE - 0.5, room
+    room = relay.SETTLE_MAX_WAIT - (checks[-1] - start)
+    assert room >= relay.SETTLE_CHECK_RESERVE - 0.1, room
     print(f"ok: {len(checks)} status checks fitted inside {elapsed:.1f}s")
 
 
