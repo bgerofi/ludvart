@@ -615,6 +615,37 @@ def test_the_config_decides_the_scopes_and_the_extra_parameters(tmp_path: Path):
     print("the config decides the scopes and the extra parameters: OK")
 
 
+def test_the_redirect_target_is_one_a_provider_will_accept(tmp_path: Path):
+    """Providers match the redirect against the client's registered list exactly.
+
+    Google's desktop clients accept any loopback port but no invented path, and
+    the out-of-band alternative is withdrawn, so the default has to stay a bare
+    loopback address -- and has to be overridable for clients registered with
+    something else.
+    """
+    parsed = urlparse(mcpauth.DEFAULT_REDIRECT_URI)
+    assert parsed.scheme == "http", mcpauth.DEFAULT_REDIRECT_URI
+    assert parsed.hostname in ("127.0.0.1", "localhost"), mcpauth.DEFAULT_REDIRECT_URI
+    assert parsed.path in ("", "/"), mcpauth.DEFAULT_REDIRECT_URI
+
+    mine = "http://localhost:9004/oauth2callback"
+    settings = mcpauth.parse_settings(
+        {"oauth": {"clientId": "cid", "redirectUri": mine}}, _expand
+    )
+    assert settings.redirect_uri == mine
+    httpd, base = _serve()
+    with _home(tmp_path):
+        try:
+            pending = mcpauth.start_login("srv", f"{base}/mcp", settings)
+            assert parse_qs(urlparse(pending.url).query)["redirect_uri"] == [mine]
+            mcpauth.finish_login(pending, f"{mine}?code=c&state={pending.state}")
+        finally:
+            httpd.shutdown()
+    # The provider checks it again at the token endpoint, so both must agree.
+    assert _AuthServer.seen_token_requests[-1]["redirect_uri"] == mine
+    print("the redirect target is one a provider will accept: OK")
+
+
 def test_a_url_from_another_attempt_is_refused(tmp_path: Path):
     """The state parameter is only worth sending if it is checked coming back."""
     httpd, base = _serve()
@@ -802,6 +833,7 @@ def main():
     test_resource_metadata_is_found_wherever_the_server_publishes_it(root / "e2")
     test_logging_in_again_does_not_keep_the_old_token(root / "e3")
     test_the_config_decides_the_scopes_and_the_extra_parameters(root / "e4")
+    test_the_redirect_target_is_one_a_provider_will_accept(root / "e5")
     test_a_url_from_another_attempt_is_refused(root / "f")
     test_a_google_login_asks_for_offline_access()
     test_the_transport_is_given_the_provider_to_authorize_with(root / "g")

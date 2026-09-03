@@ -41,8 +41,11 @@ import httpx
 #: Where the authorization server is told to send the browser. Nothing listens
 #: there: the flow is completed by pasting the URL the browser landed on, and a
 #: loopback address is the one redirect target public providers still allow for
-#: native apps.
-DEFAULT_REDIRECT_URI = "http://127.0.0.1:33418/ludvart/callback"
+#: native apps. Kept bare, with no path, because providers match the redirect
+#: against the client's registered list exactly -- Google's desktop clients
+#: accept any loopback port but not an invented path. Override it with
+#: ``oauth.redirectUri`` to match whatever the client is registered with.
+DEFAULT_REDIRECT_URI = "http://127.0.0.1:33418"
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]")
 _HTTP_TIMEOUT = 30.0

@@ -322,11 +322,17 @@ def _do_mcp_login(args, core, emit) -> None:
     emit(pending.url)
     if pending.scope:
         emit(f"Scopes requested: {pending.scope}")
+    redirect = pending.settings.redirect_uri
     emit(
-        "The browser will then fail to load a localhost address -- that is "
-        "expected. Copy the whole URL from its address bar and run:"
+        f"The browser will then fail to load {redirect} -- that is expected, "
+        "nothing listens there. Copy the whole URL from its address bar and run:"
     )
     emit(f"  /mcp_auth {name} <pasted-url>")
+    emit(
+        f"If the provider rejects the request with 'redirect_uri_mismatch', add "
+        f"{redirect} to the client's authorized redirect URIs, or set "
+        f"oauth.redirectUri for {name!r} in mcp.json to one it already accepts."
+    )
 
 
 def _do_mcp_auth(args, core, emit) -> None:
