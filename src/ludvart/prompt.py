@@ -126,12 +126,8 @@ def system_prompt(tools: Sequence[ToolSpec]) -> str:
         "(for example quitting the current program to run something else), do "
         "NOT exit on your own -- first explain the better approach and confirm "
         "with the user, and only exit the application once they agree.\n\n"
-        "IMPORTANT: Keep every response you show to the user in plain "
-        "7-bit ASCII so it renders on any terminal. Do NOT emit non-ASCII "
-        "characters such as Unicode dashes, curly quotes, arrows, em-dashes, "
-        "box-drawing glyphs or emoji -- terminals that cannot render them "
-        "show a '?' instead. Use '-' for bullets and dashes, straight ' and "
-        "\" quotes, and '->' for arrows.\n\n"
+        "UTF-8 output (including Japanese characters) is allowed when the "
+        "terminal supports it.\n\n"
         + LUDVART_HELPERS_DOC
         + load_self_md()
     )
