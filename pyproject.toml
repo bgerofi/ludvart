@@ -16,7 +16,9 @@ dependencies = [
 ludvart = "ludvart.__main__:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# The suite is mostly e2e tests blocked on a live model, so it is run across
+# several workers by default; see tests/run.sh.
+dev = ["pytest>=8", "pytest-xdist>=3"]
 copilot = ["litellm[proxy]"]
 # Runs as its own stdio process, so it is a tool ludvart launches, not an import.
 gmail = [
