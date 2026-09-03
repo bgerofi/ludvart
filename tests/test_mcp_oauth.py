@@ -680,6 +680,32 @@ def test_a_reachable_redirect_finishes_the_login_without_a_paste(tmp_path: Path)
     print("a reachable redirect finishes the login without a paste: OK")
 
 
+def test_an_idle_browser_connection_does_not_wedge_the_listener(tmp_path: Path):
+    """Browsers open speculative connections and send nothing on them.
+
+    A listener that handles one connection at a time sits blocked on such a
+    socket, and shutting it down then waits for a request that never comes --
+    which strands the login after its tokens were already stored.
+    """
+    port = _free_port()
+    catcher = mcpauth.RedirectCatcher(f"http://127.0.0.1:{port}")
+    lurker = socket.create_connection(("127.0.0.1", port), timeout=10)
+    try:
+        started = time.time()
+        reply = httpx.get(f"http://127.0.0.1:{port}/?code=granted", timeout=30)
+        served = time.time() - started
+        assert reply.status_code == 200, reply.status_code
+        assert "code=granted" in catcher.caught, catcher.caught
+        started = time.time()
+        catcher.close()
+        closed = time.time() - started
+    finally:
+        lurker.close()
+    assert served < 5, f"the redirect waited {served:.1f}s behind an idle socket"
+    assert closed < 5, f"closing took {closed:.1f}s"
+    print("an idle browser connection does not wedge the listener: OK")
+
+
 def test_a_redirect_we_cannot_listen_on_still_leaves_the_paste_flow(tmp_path: Path):
     """Losing the listener must not lose the login: most setups have no tunnel."""
     blocker = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
@@ -889,7 +915,8 @@ def main():
     test_the_config_decides_the_scopes_and_the_extra_parameters(root / "e4")
     test_the_redirect_target_is_one_a_provider_will_accept(root / "e5")
     test_a_reachable_redirect_finishes_the_login_without_a_paste(root / "e6")
-    test_a_redirect_we_cannot_listen_on_still_leaves_the_paste_flow(root / "e7")
+    test_an_idle_browser_connection_does_not_wedge_the_listener(root / "e7")
+    test_a_redirect_we_cannot_listen_on_still_leaves_the_paste_flow(root / "e8")
     test_a_url_from_another_attempt_is_refused(root / "f")
     test_a_google_login_asks_for_offline_access()
     test_the_transport_is_given_the_provider_to_authorize_with(root / "g")

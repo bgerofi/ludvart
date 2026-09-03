@@ -34,7 +34,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -329,6 +329,10 @@ class RedirectCatcher:
         catcher = self
 
         class Handler(BaseHTTPRequestHandler):
+            # Browsers open speculative connections and send nothing on them; a
+            # handler left blocked reading one would never be shut down.
+            timeout = 10
+
             def log_message(self, *args) -> None:
                 pass
 
@@ -348,7 +352,7 @@ class RedirectCatcher:
                 self.wfile.write(body)
 
         self._caught = ""
-        self._server = HTTPServer(
+        self._server = ThreadingHTTPServer(
             (parsed.hostname or "127.0.0.1", parsed.port or 80), Handler
         )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
