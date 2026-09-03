@@ -35,9 +35,9 @@ Options:
                     require a configured LLM provider (live LLM interaction).
   --serial, --no-parallel
                     Run in one process. The suite is otherwise spread over
-                    several workers, which is worth roughly 3x on wall clock;
+                    several workers, which is worth roughly 5x on wall clock;
                     use this when a failure is easier to read in order, or when
-                    debugging with -s.
+                    debugging with -s (which the workers cannot support).
   -h, --help        Show this help and exit.
 
 Any other arguments are forwarded to pytest unchanged. Passing your own -n
@@ -45,7 +45,9 @@ wins over the default parallelism.
 
 Environment:
   LUDVART_TEST_JOBS
-                    How many workers to spread the suite over (default 4).
+                    How many workers to spread the suite over (default 8).
+                    Past that the wall clock is bounded by the slowest single
+                    e2e script, so more workers buy little.
   LUDVART_E2E_MODEL
                     Which registered model the e2e tests should run on, given
                     as a 1-based /model list position or a unique substring of
@@ -111,7 +113,7 @@ fi
 # almost perfectly. "loadfile" keeps a file's tests on one worker, which is what
 # the e2e scripts want: each forks a ludvart and owns the process-wide gateway.
 if [[ "${SERIAL}" -eq 0 && "${HAVE_N}" -eq 0 ]]; then
-    PYTEST_ARGS+=(-n "${LUDVART_TEST_JOBS:-4}" --dist loadfile)
+    PYTEST_ARGS+=(-n "${LUDVART_TEST_JOBS:-8}" --dist loadfile)
 fi
 
 VENV_ACTIVATE="${PROJECT_ROOT}/.venv/bin/activate"
