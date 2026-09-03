@@ -19,7 +19,12 @@ ludvart = "ludvart.__main__:main"
 dev = ["pytest>=8"]
 copilot = ["litellm[proxy]"]
 # Runs as its own stdio process, so it is a tool ludvart launches, not an import.
-gmail = ["workspace-mcp>=1.25.2"]
+gmail = [
+    "workspace-mcp>=1.25.2",
+    # Its Google client goes through httplib2, which silently ignores HTTPS
+    # proxies unless PySocks is importable.
+    "PySocks>=1.7",
+]
 
 [build-system]
 requires = ["hatchling"]
