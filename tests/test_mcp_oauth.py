@@ -646,6 +646,60 @@ def test_the_redirect_target_is_one_a_provider_will_accept(tmp_path: Path):
     print("the redirect target is one a provider will accept: OK")
 
 
+def test_a_reachable_redirect_finishes_the_login_without_a_paste(tmp_path: Path):
+    """A tunnel from the browser to the backend removes the copying step.
+
+    The backend usually runs on another host, but an SSH forward can carry
+    localhost to it, and then the browser delivers the code itself.
+    """
+    port = _free_port()
+    mine = f"http://127.0.0.1:{port}"
+    httpd, base = _serve()
+    with _home(tmp_path):
+        try:
+            settings = mcpauth.OAuthSettings(client_id="cid", redirect_uri=mine)
+            pending = mcpauth.start_login("srv", f"{base}/mcp", settings)
+            assert pending.catcher is not None
+            # Nothing has arrived yet, so there is nothing to redeem.
+            try:
+                mcpauth.finish_login(pending)
+            except RuntimeError as exc:
+                assert "not reached the redirect address yet" in str(exc), exc
+            else:
+                raise AssertionError("an empty login was accepted")
+
+            reply = httpx.get(f"{mine}/?code=granted&state={pending.state}", timeout=10)
+            assert reply.status_code == 200, reply.status_code
+            mcpauth.finish_login(pending)
+            assert mcpauth.TokenStore("srv", settings).has_tokens()
+        finally:
+            if pending.catcher is not None:
+                pending.catcher.close()
+            httpd.shutdown()
+    assert _AuthServer.seen_token_requests[-1]["code"] == "granted"
+    print("a reachable redirect finishes the login without a paste: OK")
+
+
+def test_a_redirect_we_cannot_listen_on_still_leaves_the_paste_flow(tmp_path: Path):
+    """Losing the listener must not lose the login: most setups have no tunnel."""
+    blocker = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    port = blocker.server_port
+    httpd, base = _serve()
+    with _home(tmp_path):
+        try:
+            settings = mcpauth.OAuthSettings(
+                client_id="cid", redirect_uri=f"http://127.0.0.1:{port}"
+            )
+            pending = mcpauth.start_login("srv", f"{base}/mcp", settings)
+            assert pending.catcher is None
+            mcpauth.finish_login(pending, f"http://h/cb?code=c&state={pending.state}")
+            assert mcpauth.TokenStore("srv", settings).has_tokens()
+        finally:
+            blocker.server_close()
+            httpd.shutdown()
+    print("a redirect we cannot listen on still leaves the paste flow: OK")
+
+
 def test_a_url_from_another_attempt_is_refused(tmp_path: Path):
     """The state parameter is only worth sending if it is checked coming back."""
     httpd, base = _serve()
@@ -834,6 +888,8 @@ def main():
     test_logging_in_again_does_not_keep_the_old_token(root / "e3")
     test_the_config_decides_the_scopes_and_the_extra_parameters(root / "e4")
     test_the_redirect_target_is_one_a_provider_will_accept(root / "e5")
+    test_a_reachable_redirect_finishes_the_login_without_a_paste(root / "e6")
+    test_a_redirect_we_cannot_listen_on_still_leaves_the_paste_flow(root / "e7")
     test_a_url_from_another_attempt_is_refused(root / "f")
     test_a_google_login_asks_for_offline_access()
     test_the_transport_is_given_the_provider_to_authorize_with(root / "g")

@@ -323,11 +323,19 @@ def _do_mcp_login(args, core, emit) -> None:
     if pending.scope:
         emit(f"Scopes requested: {pending.scope}")
     redirect = pending.settings.redirect_uri
-    emit(
-        f"The browser will then fail to load {redirect} -- that is expected, "
-        "nothing listens there. Copy the whole URL from its address bar and run:"
-    )
-    emit(f"  /mcp_auth {name} <pasted-url>")
+    if pending.catcher is not None:
+        emit(f"Then run /mcp_auth {name} -- the redirect to {redirect} is caught here.")
+        emit(
+            f"The browser only reaches it through a tunnel; without one it will "
+            f"fail to load {redirect}, which is fine: copy that whole address "
+            f"and run /mcp_auth {name} <pasted-url> instead."
+        )
+    else:
+        emit(
+            f"The browser will then fail to load {redirect} -- that is expected. "
+            f"Copy the whole URL from its address bar and run:"
+        )
+        emit(f"  /mcp_auth {name} <pasted-url>")
     emit(
         f"If the provider rejects the request with 'redirect_uri_mismatch', add "
         f"{redirect} to the client's authorized redirect URIs, or set "
@@ -336,9 +344,12 @@ def _do_mcp_login(args, core, emit) -> None:
 
 
 def _do_mcp_auth(args, core, emit) -> None:
-    """Run ``/mcp_auth <server> <url>``: redeem the code the browser came back with."""
-    if core.mcp is None or len(args) < 2:
-        emit("Usage: /mcp_auth <server> <redirected-url>")
+    """Run ``/mcp_auth <server> [url]``: redeem the code the browser came back with.
+
+    The URL can be left out when the redirect was caught here.
+    """
+    if core.mcp is None or not args:
+        emit("Usage: /mcp_auth <server> [redirected-url]")
         return
     name, pasted = args[0], " ".join(args[1:])
     try:

@@ -31,8 +31,10 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -128,7 +130,10 @@ def parse_redirect(pasted: str) -> tuple[str, str | None]:
         raise ValueError(f"{error}: {detail}" if detail else error)
     code = (params.get("code") or [""])[0]
     if not code:
-        raise ValueError("no 'code' in the pasted URL")
+        raise ValueError(
+            "no 'code' in the pasted URL -- that is still a page on the "
+            "provider's own site, so the redirect has not happened yet"
+        )
     state = (params.get("state") or [None])[0]
     return code, state
 
@@ -310,6 +315,63 @@ def _register(endpoints: Endpoints, settings: OAuthSettings, scope: str):
 # -- the authorization code grant -------------------------------------------
 
 
+class RedirectCatcher:
+    """Listens on the redirect target, for when the browser can reach it.
+
+    The backend often runs on another host, but an SSH or editor port forward
+    can still carry ``localhost`` from the browser to here. When it does, the
+    authorization completes without anyone copying a URL; when it does not, the
+    browser fails to load the address and the paste flow takes over.
+    """
+
+    def __init__(self, redirect_uri: str) -> None:
+        parsed = urlparse(redirect_uri)
+        catcher = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:
+                pass
+
+            def do_GET(self) -> None:
+                query = urlparse(self.path).query
+                if query:
+                    catcher._caught = catcher._caught or query
+                body = (
+                    b"ludvart received the authorization. You can close this tab."
+                    if query
+                    else b"ludvart is waiting for the authorization redirect."
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self._caught = ""
+        self._server = HTTPServer(
+            (parsed.hostname or "127.0.0.1", parsed.port or 80), Handler
+        )
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    @property
+    def caught(self) -> str:
+        """The query string the browser arrived with, or ``""``."""
+        return self._caught
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _catch(redirect_uri: str) -> RedirectCatcher | None:
+    """Listen on the redirect target, or give up quietly if we cannot."""
+    try:
+        return RedirectCatcher(redirect_uri)
+    except OSError:
+        return None
+
+
 @dataclass
 class PendingLogin:
     """One authorization in progress, carried between the two panel commands."""
@@ -323,6 +385,7 @@ class PendingLogin:
     state: str
     scope: str
     url: str = ""
+    catcher: RedirectCatcher | None = None
 
 
 def _default_auth_params(endpoint: str) -> dict:
@@ -375,11 +438,19 @@ def start_login(server: str, url: str, settings: OAuthSettings) -> PendingLogin:
         state=state,
         scope=scope,
         url=endpoints.authorization + joiner + urlencode(params),
+        catcher=_catch(settings.redirect_uri),
     )
 
 
-def finish_login(pending: PendingLogin, pasted: str) -> None:
+def finish_login(pending: PendingLogin, pasted: str = "") -> None:
     """Redeem the code the browser was redirected with, and store the tokens."""
+    if not (pasted or "").strip():
+        if pending.catcher is None or not pending.catcher.caught:
+            raise RuntimeError(
+                "the browser has not reached the redirect address yet -- "
+                "approve the request first, or paste the URL it ended on"
+            )
+        pasted = pending.catcher.caught
     code, state = parse_redirect(pasted)
     if state is not None and not secrets.compare_digest(state, pending.state):
         raise RuntimeError("that URL is from a different login attempt (state mismatch)")

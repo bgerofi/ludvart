@@ -328,6 +328,8 @@ class McpManager:
         url = _expand(str(cfg.get("url") or cfg.get("serverUrl") or ""))
         if not url:
             raise McpConfigError(f"server {name!r} has no url to authorize against")
+        # Free the redirect port before the new login tries to listen on it.
+        self.cancel_login(name)
         try:
             pending = mcpauth.start_login(name, url, settings)
         except Exception as exc:  # noqa: BLE001 - reported to the user
@@ -335,9 +337,11 @@ class McpManager:
         self._pending[name] = pending
         return pending
 
-    def complete_login(self, name: str, pasted: str) -> None:
-        """Hand the pasted redirect back to a login started by :meth:`begin_login`.
+    def complete_login(self, name: str, pasted: str = "") -> None:
+        """Finish a login started by :meth:`begin_login`.
 
+        Without a pasted URL the redirect the listener caught is used, which is
+        what happens when the browser could reach the redirect address.
         Succeeding means the tokens are on disk; the caller re-runs discovery so
         the server joins the tool list through the normal path.
         """
@@ -349,11 +353,15 @@ class McpManager:
         except Exception as exc:  # noqa: BLE001 - reported to the user
             raise McpConfigError(_describe(exc)) from None
         finally:
+            if pending.catcher is not None:
+                pending.catcher.close()
             self._pending.pop(name, None)
 
     def cancel_login(self, name: str) -> None:
         """Abandon a login left half-finished by an earlier attempt."""
-        self._pending.pop(name, None)
+        pending = self._pending.pop(name, None)
+        if pending is not None and pending.catcher is not None:
+            pending.catcher.close()
 
     def call_tool(self, public_name: str, arguments: dict | None) -> str:
         """Invoke a namespaced MCP tool and return its text result."""
