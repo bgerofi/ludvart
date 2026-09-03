@@ -140,20 +140,46 @@ def test_panel_prompt_no_badge_by_default():
 def test_panel_prompt_shows_badge():
     panel = AiPanel(cols=80, height=8, provider="anthropic")
     panel.context_pct = 45.0
-    assert panel._prompt_prefix() == "[45%] "
+    assert panel._prompt_prefix() == "[c:45%] "
     row = _find_input_row(panel)
-    assert b"[45%] " in row
+    assert b"[c:45%] " in row
     # The badge comes before the prompt on the row.
-    assert row.index(b"[45%] ") < row.index(b"ludvart> ")
+    assert row.index(b"[c:45%] ") < row.index(b"ludvart> ")
     print("panel prompt shows badge: OK")
+
+
+def test_format_tokens_scales_with_a_unit_suffix():
+    from ludvart.panel import format_tokens
+    assert format_tokens(0) == "0"
+    assert format_tokens(940) == "940"
+    assert format_tokens(1234) == "1.2k"
+    assert format_tokens(18204) == "18k"
+    assert format_tokens(412350) == "412k"
+    assert format_tokens(3_500_000) == "3.5M"
+    assert format_tokens(12_000_000_000) == "12G"
+    print("format tokens scales with a unit suffix: OK")
+
+
+def test_panel_badge_carries_token_totals():
+    panel = AiPanel(cols=80, height=8)
+    panel.context_pct = 6.0
+    panel.total_input_tokens = 412350
+    panel.total_output_tokens = 1234
+    assert panel._prompt_prefix() == "[c:6% i:412k o:1.2k] "
+    # A field with nothing to report is left out rather than shown as zero.
+    panel.total_output_tokens = 0
+    assert panel._prompt_prefix() == "[c:6% i:412k] "
+    panel.context_pct = None
+    assert panel._prompt_prefix() == "[i:412k] "
+    print("panel badge carries token totals: OK")
 
 
 def test_panel_cursor_col_accounts_for_badge():
     panel = AiPanel(cols=80, height=8)
     panel.editor.set_text("hi")
     base_col = panel.cursor_col()
-    panel.context_pct = 45.0  # prefix "[45%] " is 6 chars
-    assert panel.cursor_col() == base_col + 6, (base_col, panel.cursor_col())
+    panel.context_pct = 45.0  # prefix "[c:45%] " is 8 chars
+    assert panel.cursor_col() == base_col + 8, (base_col, panel.cursor_col())
     print("panel cursor col accounts for badge: OK")
 
 
@@ -209,6 +235,8 @@ if __name__ == "__main__":
     test_partial_and_bad_values()
     test_panel_prompt_no_badge_by_default()
     test_panel_prompt_shows_badge()
+    test_format_tokens_scales_with_a_unit_suffix()
+    test_panel_badge_carries_token_totals()
     test_panel_cursor_col_accounts_for_badge()
     test_base_converse_carries_usage()
     test_provider_config_context_window_default()

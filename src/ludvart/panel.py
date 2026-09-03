@@ -25,6 +25,23 @@ _PROMPT = "ludvart> "
 #: shared with the transcript, so a long paste must not squeeze it out entirely.
 INPUT_MAX_ROWS = 8
 
+#: Scale suffixes for :func:`format_tokens`, largest first.
+_TOKEN_UNITS = (("T", 10**12), ("G", 10**9), ("M", 10**6), ("k", 10**3))
+
+
+def format_tokens(n: int) -> str:
+    """Render a token count in the few characters the prompt badge can spare.
+
+    Counts below a thousand are exact; above that they are scaled (940, 1.2k,
+    412k, 3.5M), with the decimal dropped once it stops carrying information.
+    """
+    n = int(n)
+    for unit, scale in _TOKEN_UNITS:
+        if n >= scale:
+            value = n / scale
+            return f"{value:.1f}{unit}" if value < 10 else f"{value:.0f}{unit}"
+    return str(n)
+
 # Animated ellipsis frames: dots grow then shrink after the "thinking" text.
 _THINK_FRAMES = ("", ".", "..", "...", "..", ".")
 
@@ -60,6 +77,10 @@ class AiPanel:
         self.interim = ""
         # Percent of the context window used by the last request (None = unknown).
         self.context_pct: float | None = None
+        # Tokens billed to this conversation so far, across every request it has
+        # made. Not the size of the context: the context is resent every turn.
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
         # When True the input line is rendered masked (e.g. while typing an API
         # key during the guided /model add flow). The stored text is untouched.
         self.masked = False
@@ -149,13 +170,23 @@ class AiPanel:
     # -- rendering -----------------------------------------------------------
 
     def _prompt_prefix(self) -> str:
-        """A dim badge shown before the prompt, e.g. "[45%] " for context use.
+        """A dim badge shown before the prompt, e.g. "[c:45% i:12k o:1.2k] ".
 
-        Empty string when the context usage is unknown.
+        ``c`` is the share of the context window the last request filled; ``i``
+        and ``o`` are the tokens this conversation has been billed so far. A
+        field with nothing to report is left out, and a badge with no fields at
+        all renders as the empty string.
         """
-        if self.context_pct is None:
+        parts = []
+        if self.context_pct is not None:
+            parts.append(f"c:{self.context_pct:.0f}%")
+        if self.total_input_tokens:
+            parts.append(f"i:{format_tokens(self.total_input_tokens)}")
+        if self.total_output_tokens:
+            parts.append(f"o:{format_tokens(self.total_output_tokens)}")
+        if not parts:
             return ""
-        return f"[{self.context_pct:.0f}%] "
+        return "[" + " ".join(parts) + "] "
 
     def _input_view(
         self, prompt: str = _PROMPT, badge: bool = True

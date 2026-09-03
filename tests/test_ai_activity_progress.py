@@ -200,7 +200,7 @@ def test_backend_context_pct_updates_the_badge():
     # Also cached so the badge survives a panel toggle.
     assert runner._panel_context_pct == 42.0
     blob = b"".join(runner._panel.render(10, 80))
-    assert b"[42%]" in blob, blob
+    assert b"[c:42%]" in blob, blob
     print("backend context usage updates the client badge: OK")
 
 

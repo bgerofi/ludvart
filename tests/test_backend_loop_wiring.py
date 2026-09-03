@@ -199,7 +199,10 @@ def test_context_badge_is_updated(tmp_path: Path):
     r, _llm, reply = run_backend(tmp_path, [42.0])
     assert reply == "final answer", reply
     assert r._panel.context_pct == 42.0, r._panel.context_pct
-    assert r._panel._prompt_prefix() == "[42%] ", r._panel._prompt_prefix()
+    prefix = r._panel._prompt_prefix()
+    assert prefix.startswith("[c:42% "), prefix
+    # The same turn's tokens are banked against the conversation.
+    assert "o:1" in prefix, prefix
 
 
 def test_compacts_when_over_threshold(tmp_path: Path):

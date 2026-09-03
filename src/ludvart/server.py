@@ -531,7 +531,13 @@ def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:
         list(data.get("llm_history", [])), version, stored_family
     )
     history = working_history(neutral)
-    core.resume(messages, history)
+    tokens = data.get("tokens") or {}
+    core.resume(
+        messages,
+        history,
+        input_tokens=tokens.get("input", 0),
+        output_tokens=tokens.get("output", 0),
+    )
     core.session = SessionStore.open_existing(session_id)
     core.session.title = data.get("title", "") or ""
     channel.send(

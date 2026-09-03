@@ -128,6 +128,11 @@ class AgentCore:
         #: Percent of the window used by the most recent prompt (drives both the
         #: badge and the compaction trigger). ``None`` until a turn reports usage.
         self.context_pct: float | None = None
+        #: Tokens billed to this conversation across every request it has made.
+        #: Not the size of the context: the whole context is resent each turn, so
+        #: these grow far past what the conversation currently holds.
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
         #: Set from the channel's reader thread to abandon the in-flight turn.
         self.cancel = threading.Event()
 
@@ -263,9 +268,24 @@ class AgentCore:
         usage = getattr(turn, "usage", None)
         if usage is None:
             return
+        self._bank_usage(usage)
         self.last_input_tokens = usage.input_tokens
         self.context_pct = usage.context_percent()
         self.host.set_context_pct(self.context_pct)
+
+    def _bank_usage(self, usage) -> None:
+        """Add one request's tokens to the conversation's running total.
+
+        Every request counts, including the tool round-trips within a turn and
+        the compaction summaries between them, because every one of them is
+        billed. Providers that report no usage block are simply not counted, so
+        the totals are a floor rather than an invoice.
+        """
+        if usage is None:
+            return
+        self.total_input_tokens += usage.input_tokens
+        self.total_output_tokens += usage.output_tokens
+        self.host.set_token_totals(self.total_input_tokens, self.total_output_tokens)
 
     # -- context compaction --------------------------------------------------
 
@@ -352,6 +372,7 @@ class AgentCore:
         except Exception as exc:  # never crash a turn; just skip compaction
             self.host.add_info(f"[ludvart] context compaction failed: {exc}")
             return None
+        self._bank_usage(getattr(turn, "usage", None))
         return (turn.text or "").strip() or None
 
     def _estimate_context_pct(self, summary: str) -> float | None:
@@ -375,19 +396,31 @@ class AgentCore:
                 self.transcript,
                 self.history,
                 provider=getattr(self.llm, "name", None),
+                input_tokens=self.total_input_tokens,
+                output_tokens=self.total_output_tokens,
             )
         except Exception:  # noqa: BLE001 - persistence must never break a turn
             pass
 
-    def resume(self, transcript, history) -> None:
-        """Replace the running conversation with a loaded session's state."""
+    def resume(self, transcript, history, input_tokens=0, output_tokens=0) -> None:
+        """Replace the running conversation with a loaded session's state.
+
+        Sessions saved before token totals were recorded carry none, so those
+        resume from zero rather than reporting a total that is missing its past.
+        """
         self.transcript = [tuple(m) for m in transcript]
         self.history = list(history)
+        self.total_input_tokens = int(input_tokens or 0)
+        self.total_output_tokens = int(output_tokens or 0)
+        self.host.set_token_totals(self.total_input_tokens, self.total_output_tokens)
 
     def reset(self) -> None:
         """Clear the conversation for a fresh session."""
         self.transcript = []
         self.history = []
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.host.set_token_totals(0, 0)
 
     def close(self) -> None:
         """Release resources owned by the loop (scratch files, MCP servers)."""

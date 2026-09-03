@@ -26,6 +26,7 @@ class RecordingHost(TerminalHost):
         self.tool_calls = []
         self.snapshots = 0
         self.context_pcts = []
+        self.token_totals = []
 
     def snapshot(self):
         self.snapshots += 1
@@ -46,6 +47,9 @@ class RecordingHost(TerminalHost):
 
     def set_context_pct(self, pct):
         self.context_pcts.append(pct)
+
+    def set_token_totals(self, inp, out):
+        self.token_totals.append((inp, out))
 
 
 class ScriptedLLM(LLMClient):
@@ -343,6 +347,66 @@ def test_missing_usage_leaves_the_badge_alone():
 
     assert host.context_pcts == []
     print("a turn without usage does not touch the badge: OK")
+
+
+def test_token_totals_accumulate_across_a_tool_loop():
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "ls"})
+    first = _tool_turn("working", call)
+    first.usage = Usage(input_tokens=1000, output_tokens=20, context_window=10000)
+    second = _text_turn("done")
+    second.usage = Usage(input_tokens=2500, output_tokens=7, context_window=10000)
+    llm = ScriptedLLM([first, second])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("inject_input")])
+
+    core.run_turn("q", "SCREEN")
+
+    # Billed, not context size: the tool round-trip's prompt is counted too.
+    assert core.total_input_tokens == 3500, core.total_input_tokens
+    assert core.total_output_tokens == 27, core.total_output_tokens
+    assert host.token_totals == [(1000, 20), (3500, 27)], host.token_totals
+    print("token totals accumulate across a tool loop: OK")
+
+
+def test_token_totals_survive_a_session_round_trip():
+    import tempfile
+    from pathlib import Path
+
+    from ludvart.session import SessionStore, load_session
+
+    root = Path(tempfile.mkdtemp())
+    host = RecordingHost()
+    turn = _text_turn("hi")
+    turn.usage = Usage(input_tokens=4000, output_tokens=120, context_window=10000)
+    core = AgentCore(
+        ScriptedLLM([turn]),
+        host,
+        system_prompt="SYS",
+        session=SessionStore(root=root),
+    )
+    core.run_turn("q", "SCREEN")
+
+    data = load_session(core.session.session_id, root=root)
+    assert data["tokens"] == {"input": 4000, "output": 120}, data["tokens"]
+
+    resumed = AgentCore(ScriptedLLM([]), RecordingHost(), system_prompt="SYS")
+    resumed.resume(
+        data["messages"],
+        data["llm_history"],
+        input_tokens=data["tokens"]["input"],
+        output_tokens=data["tokens"]["output"],
+    )
+    assert resumed.total_input_tokens == 4000
+    assert resumed.total_output_tokens == 120
+    print("token totals survive a session round trip: OK")
+
+
+def test_a_session_saved_before_totals_existed_resumes_from_zero():
+    core = AgentCore(ScriptedLLM([]), RecordingHost(), system_prompt="SYS")
+    core.total_input_tokens = 999
+    core.resume([("you", "q")], [{"role": "user", "content": "q"}])
+    assert core.total_input_tokens == 0, core.total_input_tokens
+    print("an older session resumes its totals from zero: OK")
 
 
 # -- past screen snapshots ---------------------------------------------------
@@ -702,6 +766,9 @@ def main():
     test_usage_reported_to_host_for_context_badge()
     test_usage_reported_on_every_step_of_a_tool_loop()
     test_missing_usage_leaves_the_badge_alone()
+    test_token_totals_accumulate_across_a_tool_loop()
+    test_token_totals_survive_a_session_round_trip()
+    test_a_session_saved_before_totals_existed_resumes_from_zero()
     test_each_snapshot_is_stamped_with_a_unique_timestamp()
     test_only_the_newest_snapshot_is_sent_to_the_model()
     test_a_screen_a_tool_reported_is_stamped_and_recoverable()

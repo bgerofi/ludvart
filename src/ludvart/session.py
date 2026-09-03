@@ -153,6 +153,8 @@ class SessionStore:
         messages: list[tuple[str, str]],
         llm_history: list[dict[str, Any]],
         provider: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
     ) -> None:
         """Atomically (re)write the conversation file with the current state.
 
@@ -160,6 +162,10 @@ class SessionStore:
         shape ``llm_history`` is stored in. It is recorded so that resuming the
         session under a different provider can detect the mismatch and sanitize
         the history to a provider-neutral form (see :func:`sanitize_history`).
+
+        ``input_tokens``/``output_tokens`` are the conversation's cumulative
+        billed totals. They belong to the session rather than to any model, so
+        they survive a ``/model use`` mid-conversation.
         """
         self.dir.mkdir(parents=True, exist_ok=True)
         data = {
@@ -169,6 +175,7 @@ class SessionStore:
             "updated_at": _iso(_utc_now()),
             "provider": provider,
             "title": getattr(self, "title", "") or "",
+            "tokens": {"input": int(input_tokens), "output": int(output_tokens)},
             "messages": [list(m) for m in persisted_messages(messages)],
             "llm_history": llm_history,
         }

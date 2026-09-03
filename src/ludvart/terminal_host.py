@@ -69,6 +69,10 @@ class TerminalHost(ABC):
         """
         # Default: nothing to display.
 
+    def set_token_totals(self, inp: int, out: int) -> None:
+        """Update the conversation's cumulative billed input/output tokens."""
+        # Default: nothing to display.
+
     def add_summary(self, text: str) -> None:
         """Mark a context-compaction point in the transcript with its summary."""
         # Default: nothing to render.

@@ -112,6 +112,9 @@ class RemoteTerminalHost(TerminalHost):
     def set_context_pct(self, pct: float | None) -> None:
         self._notify("context", pct=pct)
 
+    def set_token_totals(self, inp: int, out: int) -> None:
+        self._notify("tokens", inp=inp, out=out)
+
     def add_summary(self, text: str) -> None:
         self._notify("summary", text=text)
 

@@ -309,6 +309,8 @@ class BackendClient:
             host.add_info(msg.get("text", ""))
         elif kind == "context":
             host.set_context_pct(msg.get("pct"))
+        elif kind == "tokens":
+            host.set_token_totals(msg.get("inp", 0), msg.get("out", 0))
         elif kind == "summary":
             host.add_summary(msg.get("text", ""))
         elif kind == "system":
