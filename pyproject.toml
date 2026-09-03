@@ -18,6 +18,8 @@ ludvart = "ludvart.__main__:main"
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 copilot = ["litellm[proxy]"]
+# Runs as its own stdio process, so it is a tool ludvart launches, not an import.
+gmail = ["workspace-mcp>=1.25.2"]
 
 [build-system]
 requires = ["hatchling"]
