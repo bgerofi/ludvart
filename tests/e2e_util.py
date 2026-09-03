@@ -24,8 +24,14 @@ DEFAULT_COMMAND = ["bash", "--norc", "-i"]
 #: Where a test run keeps the conversations it creates. An e2e script forks a
 #: real ludvart, which saves its conversation like any other run does, so
 #: without this they land in ~/.ludvart/sessions and /sessions lists them
-#: alongside the developer's actual work.
-TEST_SESSIONS_DIR = os.path.join(tempfile.gettempdir(), "ludvart-test-sessions")
+#: alongside the developer's actual work. Session ids have one-second
+#: resolution, so parallel workers get a root each rather than racing to claim
+#: the same directory.
+_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+TEST_SESSIONS_DIR = os.path.join(
+    tempfile.gettempdir(),
+    "ludvart-test-sessions" + (f"-{_WORKER}" if _WORKER else ""),
+)
 
 
 def isolate_sessions() -> str:

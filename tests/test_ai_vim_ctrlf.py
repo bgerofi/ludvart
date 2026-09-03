@@ -22,8 +22,8 @@ def show(screen, label):
 
 
 def main():
-    # Build a long numbered file to make paging visible.
-    with open("/tmp/ludvart_vim_test.txt", "w") as f:
+    # Built in the cwd, which the runner makes a throwaway directory per test.
+    with open("ludvart_vim_test.txt", "w") as f:
         for i in range(1, 201):
             f.write(f"line_{i:03d}\n")
 
@@ -40,7 +40,7 @@ def main():
     approver = Approver(m)
 
     checks.add("ludvart finished starting up", wait_until_started(m, stream.feed, screen))
-    os.write(m, b"vim -u NONE /tmp/ludvart_vim_test.txt\r")
+    os.write(m, b"vim -u NONE ludvart_vim_test.txt\r")
     checks.add(
         "vim opened at the top of the file",
         wait_for(m, stream.feed, lambda: "line_001" in screen_text(screen), 15, settle=0.5),

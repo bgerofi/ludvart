@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import pty
+import shutil
 import sys
 import tempfile
 import time
@@ -357,6 +358,12 @@ class _MainScriptItem(pytest.Item):
                 children.append(pid)
             return pid, fd
 
+        # The forked ludvart runs a shell that inherits this directory, and the
+        # scripts make it create files. Give each one its own so they cannot
+        # collide with each other, with a parallel worker, or with the repo.
+        origin = os.getcwd()
+        workdir = tempfile.mkdtemp(prefix="ludvart_e2e_cwd_")
+        os.chdir(workdir)
         pty.fork = recording_fork
         try:
             module.main()
@@ -364,6 +371,8 @@ class _MainScriptItem(pytest.Item):
             pty.fork = real_fork
             for pid in children:
                 _reap(pid)
+            os.chdir(origin)
+            shutil.rmtree(workdir, ignore_errors=True)
 
     def reportinfo(self):
         return self.path, 0, f"e2e: {self.path.stem}"
