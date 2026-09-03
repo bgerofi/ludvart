@@ -331,11 +331,24 @@ class McpManager:
         # Free the redirect port before the new login tries to listen on it.
         self.cancel_login(name)
         try:
-            pending = mcpauth.start_login(name, url, settings)
+            pending = mcpauth.start_login(
+                name, url, settings, on_authorized=lambda: self._after_login(name)
+            )
         except Exception as exc:  # noqa: BLE001 - reported to the user
             raise McpConfigError(_describe(exc)) from None
         self._pending[name] = pending
         return pending
+
+    def _after_login(self, name: str) -> None:
+        """Pick up the tools of a server that authorized itself in the browser.
+
+        The pending login stays put so a later /mcp_auth can say it is already
+        done rather than that no login is in progress.
+        """
+        try:
+            self.refresh()
+        except Exception:  # noqa: BLE001 - the tokens are stored either way
+            pass
 
     def complete_login(self, name: str, pasted: str = "") -> None:
         """Finish a login started by :meth:`begin_login`.

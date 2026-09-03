@@ -680,6 +680,66 @@ def test_a_reachable_redirect_finishes_the_login_without_a_paste(tmp_path: Path)
     print("a reachable redirect finishes the login without a paste: OK")
 
 
+def test_the_browser_alone_finishes_the_login(tmp_path: Path):
+    """Approving in the browser is the whole flow when the redirect arrives.
+
+    The code is redeemed as it lands and the server's tools are picked up, so
+    there is no second command and nothing to copy.
+    """
+    port = _free_port()
+    mine = f"http://127.0.0.1:{port}"
+    httpd, base = _serve()
+    picked_up = []
+    with _home(tmp_path):
+        try:
+            settings = mcpauth.OAuthSettings(client_id="cid", redirect_uri=mine)
+            pending = mcpauth.start_login(
+                "srv", f"{base}/mcp", settings,
+                on_authorized=lambda: picked_up.append(True),
+            )
+            assert pending.catcher is not None
+            reply = httpx.get(f"{mine}/?code=granted&state={pending.state}", timeout=10)
+            assert reply.status_code == 200, reply.status_code
+            assert "authorized" in reply.text.lower(), reply.text
+            assert mcpauth.TokenStore("srv", settings).has_tokens()
+            assert picked_up == [True], picked_up
+            # Redeeming twice would spend a code the provider has retired.
+            again = httpx.get(f"{mine}/?code=granted&state={pending.state}", timeout=10)
+            assert "already authorized" in again.text.lower(), again.text
+            # /mcp_auth is still allowed to be run, and has nothing left to do.
+            mcpauth.finish_login(pending)
+        finally:
+            pending.catcher.close()
+            httpd.shutdown()
+    assert len(_AuthServer.seen_token_requests) == 1, _AuthServer.seen_token_requests
+    print("the browser alone finishes the login: OK")
+
+
+def test_a_redirect_that_cannot_be_redeemed_says_so_in_the_browser(tmp_path: Path):
+    """The browser is the only place this can be reported: nothing is waiting."""
+    port = _free_port()
+    mine = f"http://127.0.0.1:{port}"
+    httpd, base = _serve()
+    with _home(tmp_path):
+        try:
+            settings = mcpauth.OAuthSettings(client_id="cid", redirect_uri=mine)
+            pending = mcpauth.start_login("srv", f"{base}/mcp", settings)
+            reply = httpx.get(f"{mine}/?code=granted&state=somebody-elses", timeout=10)
+            assert "could not complete" in reply.text.lower(), reply.text
+            assert not mcpauth.TokenStore("srv", settings).has_tokens()
+            # The panel command surfaces the same reason rather than a timeout.
+            try:
+                mcpauth.finish_login(pending)
+            except RuntimeError as exc:
+                assert "state mismatch" in str(exc), exc
+            else:
+                raise AssertionError("a mismatched state was accepted")
+        finally:
+            pending.catcher.close()
+            httpd.shutdown()
+    print("a redirect that cannot be redeemed says so in the browser: OK")
+
+
 def test_an_idle_browser_connection_does_not_wedge_the_listener(tmp_path: Path):
     """Browsers open speculative connections and send nothing on them.
 
@@ -915,8 +975,10 @@ def main():
     test_the_config_decides_the_scopes_and_the_extra_parameters(root / "e4")
     test_the_redirect_target_is_one_a_provider_will_accept(root / "e5")
     test_a_reachable_redirect_finishes_the_login_without_a_paste(root / "e6")
-    test_an_idle_browser_connection_does_not_wedge_the_listener(root / "e7")
-    test_a_redirect_we_cannot_listen_on_still_leaves_the_paste_flow(root / "e8")
+    test_the_browser_alone_finishes_the_login(root / "e7")
+    test_a_redirect_that_cannot_be_redeemed_says_so_in_the_browser(root / "e8")
+    test_an_idle_browser_connection_does_not_wedge_the_listener(root / "e9")
+    test_a_redirect_we_cannot_listen_on_still_leaves_the_paste_flow(root / "e10")
     test_a_url_from_another_attempt_is_refused(root / "f")
     test_a_google_login_asks_for_offline_access()
     test_the_transport_is_given_the_provider_to_authorize_with(root / "g")

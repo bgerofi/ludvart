@@ -324,11 +324,14 @@ def _do_mcp_login(args, core, emit) -> None:
         emit(f"Scopes requested: {pending.scope}")
     redirect = pending.settings.redirect_uri
     if pending.catcher is not None:
-        emit(f"Then run /mcp_auth {name} -- the redirect to {redirect} is caught here.")
         emit(
-            f"The browser only reaches it through a tunnel; without one it will "
-            f"fail to load {redirect}, which is fine: copy that whole address "
-            f"and run /mcp_auth {name} <pasted-url> instead."
+            f"Approving finishes it: the redirect to {redirect} is caught here "
+            f"and the browser will say so. Nothing else to run."
+        )
+        emit(
+            f"The browser only reaches {redirect} through a tunnel. Without one "
+            f"it will fail to load that address, which is fine: copy the whole "
+            f"address and run /mcp_auth {name} <pasted-url> instead."
         )
     else:
         emit(

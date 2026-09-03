@@ -320,8 +320,10 @@ class RedirectCatcher:
 
     The backend often runs on another host, but an SSH or editor port forward
     can still carry ``localhost`` from the browser to here. When it does, the
-    authorization completes without anyone copying a URL; when it does not, the
-    browser fails to load the address and the paste flow takes over.
+    code is redeemed the moment it arrives and the browser is told how it went,
+    which is the only report anyone gets -- the panel is not waiting on it. When
+    it does not, the browser fails to load the address and the paste flow takes
+    over.
     """
 
     def __init__(self, redirect_uri: str) -> None:
@@ -340,11 +342,10 @@ class RedirectCatcher:
                 query = urlparse(self.path).query
                 if query:
                     catcher._caught = catcher._caught or query
-                body = (
-                    b"ludvart received the authorization. You can close this tab."
-                    if query
-                    else b"ludvart is waiting for the authorization redirect."
-                )
+                    message = catcher._redeem(query)
+                else:
+                    message = "ludvart is waiting for the authorization redirect."
+                body = message.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -352,16 +353,46 @@ class RedirectCatcher:
                 self.wfile.write(body)
 
         self._caught = ""
+        self._done = False
+        self._error = ""
+        self._redeemer = None
         self._server = ThreadingHTTPServer(
             (parsed.hostname or "127.0.0.1", parsed.port or 80), Handler
         )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
+    def arm(self, redeemer) -> None:
+        """Redeem arriving codes with ``redeemer``, which may raise."""
+        self._redeemer = redeemer
+
+    def _redeem(self, query: str) -> str:
+        if self._redeemer is None:
+            return "ludvart received the authorization. You can close this tab."
+        if self._done:
+            return "ludvart is already authorized for this server."
+        try:
+            self._redeemer(query)
+        except Exception as exc:  # noqa: BLE001 - shown in the browser
+            self._error = str(exc)
+            return f"ludvart could not complete the authorization: {exc}"
+        self._done = True
+        return "ludvart is authorized. You can close this tab."
+
     @property
     def caught(self) -> str:
         """The query string the browser arrived with, or ``""``."""
         return self._caught
+
+    @property
+    def done(self) -> bool:
+        """True once a caught code has been exchanged for tokens."""
+        return self._done
+
+    @property
+    def error(self) -> str:
+        """Why redeeming a caught code failed, if it did."""
+        return self._error
 
     def close(self) -> None:
         self._server.shutdown()
@@ -402,8 +433,14 @@ def _default_auth_params(endpoint: str) -> dict:
     return {}
 
 
-def start_login(server: str, url: str, settings: OAuthSettings) -> PendingLogin:
-    """Discover the authorization server and build the URL the user must visit."""
+def start_login(
+    server: str, url: str, settings: OAuthSettings, on_authorized=None
+) -> PendingLogin:
+    """Discover the authorization server and build the URL the user must visit.
+
+    ``on_authorized`` runs on the listener's thread once a caught code has been
+    redeemed, for whatever has to happen before the tokens are of any use.
+    """
     endpoints = discover(url)
     scope = settings.scopes or endpoints.scopes
     store = TokenStore(server, settings)
@@ -432,7 +469,7 @@ def start_login(server: str, url: str, settings: OAuthSettings) -> PendingLogin:
         params["scope"] = scope
     params.update(settings.auth_params or _default_auth_params(endpoints.authorization))
     joiner = "&" if "?" in endpoints.authorization else "?"
-    return PendingLogin(
+    pending = PendingLogin(
         server=server,
         settings=settings,
         endpoints=endpoints,
@@ -444,17 +481,36 @@ def start_login(server: str, url: str, settings: OAuthSettings) -> PendingLogin:
         url=endpoints.authorization + joiner + urlencode(params),
         catcher=_catch(settings.redirect_uri),
     )
+    if pending.catcher is not None:
+        pending.catcher.arm(lambda query: _redeem(pending, query, on_authorized))
+    return pending
+
+
+def _redeem(pending: PendingLogin, query: str, on_authorized=None) -> None:
+    """Exchange a caught code, then let the caller act on the new tokens."""
+    _exchange(pending, query)
+    if on_authorized is not None:
+        on_authorized()
 
 
 def finish_login(pending: PendingLogin, pasted: str = "") -> None:
     """Redeem the code the browser was redirected with, and store the tokens."""
     if not (pasted or "").strip():
-        if pending.catcher is None or not pending.catcher.caught:
+        catcher = pending.catcher
+        if catcher is not None and catcher.done:
+            return  # the redirect arrived here and was redeemed already
+        if catcher is not None and catcher.error:
+            raise RuntimeError(catcher.error)
+        if catcher is None or not catcher.caught:
             raise RuntimeError(
                 "the browser has not reached the redirect address yet -- "
                 "approve the request first, or paste the URL it ended on"
             )
-        pasted = pending.catcher.caught
+        pasted = catcher.caught
+    _exchange(pending, pasted)
+
+
+def _exchange(pending: PendingLogin, pasted: str) -> None:
     code, state = parse_redirect(pasted)
     if state is not None and not secrets.compare_digest(state, pending.state):
         raise RuntimeError("that URL is from a different login attempt (state mismatch)")
