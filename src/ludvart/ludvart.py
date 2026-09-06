@@ -229,11 +229,13 @@ class _ClientTerminalHost(TerminalHost):
         # the main loop's _refresh_wait tick advances the counter.
         self._app._begin_wait(label)
 
-    def set_context_pct(self, pct: float | None) -> None:
+    def set_context_usage(self, tokens: int, pct: float | None) -> None:
         self._app._panel_context_pct = pct
+        self._app._panel_context_tokens = tokens
         panel = self._app._panel
         if panel is not None:
             panel.context_pct = pct
+            panel.context_tokens = tokens
 
     def set_token_totals(self, inp: int, out: int) -> None:
         self._app._panel_tokens = (inp, out)
@@ -416,6 +418,7 @@ class Ludvart:
         self._panel_closing = False
         self._panel_messages: list[tuple[str, str]] = []
         self._panel_context_pct: float | None = None
+        self._panel_context_tokens = 0
         # Cumulative billed (input, output) tokens, likewise kept across toggles.
         self._panel_tokens: tuple[int, int] = (0, 0)
         # Unsent input line preserved across panel toggles, so text typed but
@@ -857,6 +860,7 @@ class Ludvart:
         self._panel = AiPanel(cols, height, provider)
         self._panel.restore(self._panel_messages)
         self._panel.context_pct = self._panel_context_pct
+        self._panel.context_tokens = self._panel_context_tokens
         self._panel.total_input_tokens = self._panel_tokens[0]
         self._panel.total_output_tokens = self._panel_tokens[1]
         # Restore any unsent input line typed before the last toggle.
@@ -1005,6 +1009,7 @@ class Ludvart:
         if self._panel is not None:
             self._panel_messages = self._panel.messages  # keep for next toggle
             self._panel_context_pct = self._panel.context_pct
+            self._panel_context_tokens = self._panel.context_tokens
             self._panel_tokens = (
                 self._panel.total_input_tokens,
                 self._panel.total_output_tokens,

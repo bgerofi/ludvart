@@ -131,21 +131,32 @@ def test_panel_prompt_no_badge_by_default():
     panel = AiPanel(cols=80, height=8, provider="anthropic")
     assert panel._prompt_prefix() == ""
     row = _find_input_row(panel)
-    # No percent badge anywhere on the row.
+    # No badge anywhere on the row.
     import re as _re
-    assert _re.search(rb"\[\d+%\]", row) is None, row
+    assert _re.search(rb"\[c:", row) is None, row
     print("panel prompt no badge by default: OK")
 
 
 def test_panel_prompt_shows_badge():
     panel = AiPanel(cols=80, height=8, provider="anthropic")
+    panel.context_tokens = 9000
     panel.context_pct = 45.0
-    assert panel._prompt_prefix() == "[c:45%] "
+    assert panel._prompt_prefix() == "[c:9.0k(45%)] "
     row = _find_input_row(panel)
-    assert b"[c:45%] " in row
+    assert b"[c:9.0k(45%)] " in row
     # The badge comes before the prompt on the row.
-    assert row.index(b"[c:45%] ") < row.index(b"ludvart> ")
+    assert row.index(b"[c:9.0k(45%)] ") < row.index(b"ludvart> ")
     print("panel prompt shows badge: OK")
+
+
+def test_panel_context_without_a_known_window_shows_only_tokens():
+    # An endpoint that never reports its window still reports prompt sizes, and
+    # the count is worth showing on its own.
+    panel = AiPanel(cols=80, height=8)
+    panel.context_tokens = 12500
+    panel.context_pct = None
+    assert panel._prompt_prefix() == "[c:12k] "
+    print("panel context without a known window shows only tokens: OK")
 
 
 def test_format_tokens_scales_with_a_unit_suffix():
@@ -162,14 +173,15 @@ def test_format_tokens_scales_with_a_unit_suffix():
 
 def test_panel_badge_carries_token_totals():
     panel = AiPanel(cols=80, height=8)
+    panel.context_tokens = 10240
     panel.context_pct = 6.0
     panel.total_input_tokens = 412350
     panel.total_output_tokens = 1234
-    assert panel._prompt_prefix() == "[c:6% i:412k o:1.2k] "
+    assert panel._prompt_prefix() == "[c:10k(6%) i:412k o:1.2k] "
     # A field with nothing to report is left out rather than shown as zero.
     panel.total_output_tokens = 0
-    assert panel._prompt_prefix() == "[c:6% i:412k] "
-    panel.context_pct = None
+    assert panel._prompt_prefix() == "[c:10k(6%) i:412k] "
+    panel.context_tokens = 0
     assert panel._prompt_prefix() == "[i:412k] "
     print("panel badge carries token totals: OK")
 
@@ -178,8 +190,9 @@ def test_panel_cursor_col_accounts_for_badge():
     panel = AiPanel(cols=80, height=8)
     panel.editor.set_text("hi")
     base_col = panel.cursor_col()
-    panel.context_pct = 45.0  # prefix "[c:45%] " is 8 chars
-    assert panel.cursor_col() == base_col + 8, (base_col, panel.cursor_col())
+    panel.context_tokens = 9000
+    panel.context_pct = 45.0  # prefix "[c:9.0k(45%)] " is 14 chars
+    assert panel.cursor_col() == base_col + 14, (base_col, panel.cursor_col())
     print("panel cursor col accounts for badge: OK")
 
 
@@ -235,6 +248,7 @@ if __name__ == "__main__":
     test_partial_and_bad_values()
     test_panel_prompt_no_badge_by_default()
     test_panel_prompt_shows_badge()
+    test_panel_context_without_a_known_window_shows_only_tokens()
     test_format_tokens_scales_with_a_unit_suffix()
     test_panel_badge_carries_token_totals()
     test_panel_cursor_col_accounts_for_badge()

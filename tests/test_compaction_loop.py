@@ -59,7 +59,7 @@ class _Host(TerminalHost):
     def add_summary(self, summary):
         self.summaries.append(summary)
 
-    def set_context_pct(self, pct):
+    def set_context_usage(self, tokens, pct):
         self.context_pcts.append(pct)
 
 

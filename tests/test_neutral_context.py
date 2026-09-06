@@ -274,7 +274,7 @@ class _Host(TerminalHost):
     def add_info(self, text):
         pass
 
-    def set_context_pct(self, pct):
+    def set_context_usage(self, tokens, pct):
         pass
 
 

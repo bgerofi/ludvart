@@ -200,7 +200,7 @@ def test_context_badge_is_updated(tmp_path: Path):
     assert reply == "final answer", reply
     assert r._panel.context_pct == 42.0, r._panel.context_pct
     prefix = r._panel._prompt_prefix()
-    assert prefix.startswith("[c:42% "), prefix
+    assert prefix.startswith("[c:") and "(42%)" in prefix, prefix
     # The same turn's tokens are banked against the conversation.
     assert "o:1" in prefix, prefix
 

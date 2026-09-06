@@ -276,7 +276,7 @@ class AgentCore:
         self._bank_usage(usage)
         self.last_input_tokens = usage.input_tokens
         self.context_pct = usage.context_percent()
-        self.host.set_context_pct(self.context_pct)
+        self.host.set_context_usage(self.last_input_tokens, self.context_pct)
 
     def _bank_usage(self, usage) -> None:
         """Add one request's tokens to the conversation's running total.
@@ -343,8 +343,10 @@ class AgentCore:
         ]
         self.transcript.append(("summary", summary))
         self.host.add_summary(summary)
-        self.context_pct = self._estimate_context_pct(summary)
-        self.host.set_context_pct(self.context_pct)
+        self.last_input_tokens, self.context_pct = self._estimate_context_usage(
+            summary
+        )
+        self.host.set_context_usage(self.last_input_tokens, self.context_pct)
         self.host.set_activity("Thinking")
         self._persist()
         return summary
@@ -380,17 +382,19 @@ class AgentCore:
         self._bank_usage(getattr(turn, "usage", None))
         return (turn.text or "").strip() or None
 
-    def _estimate_context_pct(self, summary: str) -> float | None:
+    def _estimate_context_usage(self, summary: str) -> tuple[int, float | None]:
         """Rough post-compaction usage (~4 chars/token + seed overhead).
 
         The next real turn replaces this with the provider-reported value; this
-        just makes the badge reflect the drop immediately.
+        just makes the badge reflect the drop immediately. The token estimate
+        also replaces the pre-compaction prompt size, which would otherwise be
+        left behind to misreport the window on the next model switch.
         """
+        approx_tokens = (len(summary) + 400) // 4
         cw = getattr(self.llm, "context_window", 0) or 0
         if cw <= 0:
-            return None
-        approx_tokens = (len(summary) + 400) // 4
-        return max(0.0, 100.0 * approx_tokens / cw)
+            return approx_tokens, None
+        return approx_tokens, max(0.0, 100.0 * approx_tokens / cw)
 
     def _persist(self) -> None:
         """Save the conversation to the backend session store (best effort)."""

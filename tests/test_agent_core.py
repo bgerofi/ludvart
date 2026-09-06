@@ -26,6 +26,7 @@ class RecordingHost(TerminalHost):
         self.tool_calls = []
         self.snapshots = 0
         self.context_pcts = []
+        self.context_tokens = []
         self.token_totals = []
 
     def snapshot(self):
@@ -45,8 +46,9 @@ class RecordingHost(TerminalHost):
     def add_info(self, text):
         self.infos.append(text)
 
-    def set_context_pct(self, pct):
+    def set_context_usage(self, tokens, pct):
         self.context_pcts.append(pct)
+        self.context_tokens.append(tokens)
 
     def set_token_totals(self, inp, out):
         self.token_totals.append((inp, out))

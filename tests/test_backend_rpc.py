@@ -63,7 +63,7 @@ class RecordingHost(TerminalHost):
     def set_model(self, label):
         self.model_label = label
 
-    def set_context_pct(self, pct):
+    def set_context_usage(self, tokens, pct):
         self.context_pcts.append(pct)
 
 

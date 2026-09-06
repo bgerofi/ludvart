@@ -78,6 +78,8 @@ class AiPanel:
         self.interim = ""
         # Percent of the context window used by the last request (None = unknown).
         self.context_pct: float | None = None
+        # Tokens in that same request's prompt, i.e. how big the context now is.
+        self.context_tokens = 0
         # Tokens billed to this conversation so far, across every request it has
         # made. Not the size of the context: the context is resent every turn.
         self.total_input_tokens = 0
@@ -171,16 +173,19 @@ class AiPanel:
     # -- rendering -----------------------------------------------------------
 
     def _prompt_prefix(self) -> str:
-        """A dim badge shown before the prompt, e.g. "[c:45% i:12k o:1.2k] ".
+        """A dim badge shown before the prompt, e.g. "[c:10k(4%) i:12k o:1.2k] ".
 
-        ``c`` is the share of the context window the last request filled; ``i``
-        and ``o`` are the tokens this conversation has been billed so far. A
-        field with nothing to report is left out, and a badge with no fields at
-        all renders as the empty string.
+        ``c`` is how big the context has grown, with its share of the window in
+        brackets; ``i`` and ``o`` are the tokens this conversation has been
+        billed so far. A field with nothing to report is left out, and a badge
+        with no fields at all renders as the empty string.
         """
         parts = []
-        if self.context_pct is not None:
-            parts.append(f"c:{self.context_pct:.0f}%")
+        if self.context_tokens:
+            context = f"c:{format_tokens(self.context_tokens)}"
+            if self.context_pct is not None:
+                context += f"({self.context_pct:.0f}%)"
+            parts.append(context)
         if self.total_input_tokens:
             parts.append(f"i:{format_tokens(self.total_input_tokens)}")
         if self.total_output_tokens:

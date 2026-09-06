@@ -656,6 +656,7 @@ def _do_model_use(token: str, manager, core, channel: FrameChannel, emit) -> Non
             message(
                 MsgType.PANEL_UPDATE,
                 kind="context",
+                tokens=getattr(core, "last_input_tokens", 0) or 0,
                 pct=_context_pct_for(core, manager.client),
             )
         )

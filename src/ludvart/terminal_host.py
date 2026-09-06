@@ -62,10 +62,11 @@ class TerminalHost(ABC):
         """Update the displayed active-model label (e.g. after ``/model use``)."""
         # Default: nothing to display.
 
-    def set_context_pct(self, pct: float | None) -> None:
-        """Update the context-usage badge (percent of the window the prompt used).
+    def set_context_usage(self, tokens: int, pct: float | None) -> None:
+        """Update the context badge: the prompt's size and its share of the window.
 
-        ``None`` hides the badge (window size unknown).
+        ``pct`` is ``None`` when the window size is unknown, in which case only
+        the token count is shown.
         """
         # Default: nothing to display.
 

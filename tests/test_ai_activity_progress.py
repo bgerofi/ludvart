@@ -195,12 +195,12 @@ def test_backend_context_pct_updates_the_badge():
     runner = _make_ludvart()
     host = _ClientTerminalHost(runner)
 
-    host.set_context_pct(42.0)
+    host.set_context_usage(3200, 42.0)
     assert runner._panel.context_pct == 42.0
     # Also cached so the badge survives a panel toggle.
     assert runner._panel_context_pct == 42.0
     blob = b"".join(runner._panel.render(10, 80))
-    assert b"[c:42%]" in blob, blob
+    assert b"[c:3.2k(42%)]" in blob, blob
     print("backend context usage updates the client badge: OK")
 
 

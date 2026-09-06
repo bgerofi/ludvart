@@ -109,8 +109,8 @@ class RemoteTerminalHost(TerminalHost):
     def set_activity(self, label: str) -> None:
         self._notify("activity", label=label)
 
-    def set_context_pct(self, pct: float | None) -> None:
-        self._notify("context", pct=pct)
+    def set_context_usage(self, tokens: int, pct: float | None) -> None:
+        self._notify("context", tokens=tokens, pct=pct)
 
     def set_token_totals(self, inp: int, out: int) -> None:
         self._notify("tokens", inp=inp, out=out)
