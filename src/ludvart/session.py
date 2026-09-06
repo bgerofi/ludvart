@@ -509,7 +509,7 @@ def neutralize_history(
 # Registry of in-panel commands and their subcommands. Used both to dispatch and
 # to drive Tab completion. Keep the subcommand lists sorted for stable output.
 SLASH_COMMANDS: dict[str, list[str]] = {
-    "compact": [],
+    "compact": ["last-turn"],
     "help": [],
     "init_helpers": [],
     "mcp_auth": [],
@@ -526,9 +526,9 @@ SLASH_COMMANDS: dict[str, list[str]] = {
 SLASH_COMMAND_HELP: list[tuple[str, str]] = [
     ("/help", "Show this list of internal panel commands."),
     (
-        "/compact",
-        "Summarise the conversation so far and replace the working context "
-        "with that summary, freeing up the context window.",
+        "/compact [last-turn]",
+        "Summarise the whole conversation, or retain only context relevant to "
+        "the latest turn, and replace the working context with that summary.",
     ),
     (
         "/init_helpers",

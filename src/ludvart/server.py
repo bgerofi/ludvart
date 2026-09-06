@@ -231,7 +231,7 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
     elif cmd == "sessions":
         _handle_sessions(parts[1:], core, channel, emit)
     elif cmd == "compact":
-        _do_compact(core, channel, emit)
+        _do_compact(parts[1:], core, channel, emit)
     elif cmd == "mcp_refresh":
         _do_mcp_refresh(core, emit)
     elif cmd == "mcp_login":
@@ -243,13 +243,16 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
     channel.send(message(MsgType.REPLY, text="", payload=result))
 
 
-def _do_compact(core, channel: FrameChannel, emit) -> None:
-    """Run ``/compact``: summarize the conversation on demand.
+def _do_compact(args, core, channel: FrameChannel, emit) -> None:
+    """Run ``/compact [last-turn]``: summarize the conversation on demand.
 
     Same mechanism as the automatic 80%-full compaction, but triggered by the
     user. The conversation and the model both live here, so this is where it has
     to happen; the client only renders the resulting summary marker.
     """
+    if args not in ([], ["last-turn"]):
+        emit("Usage: /compact [last-turn]")
+        return
     if core.llm is None:
         emit("No model is registered on the backend; nothing to compact.")
         return
@@ -257,14 +260,16 @@ def _do_compact(core, channel: FrameChannel, emit) -> None:
         emit("Conversation is already compact.")
         return
     before = len(core.history)
-    compacted = core.compact()
+    last_turn = args == ["last-turn"]
+    compacted = core.compact(last_turn=last_turn)
     core.host.set_activity("")  # no turn is running; drop the spinner again
     if not compacted:
         emit("Compaction failed; the conversation was left unchanged.")
         return
     pct = core.context_pct
     pct_note = f", context now ~{pct:.0f}%" if pct is not None else ""
-    emit(f"Compacted {before} messages into a summary{pct_note}.")
+    focus_note = " around the last turn" if last_turn else ""
+    emit(f"Compacted {before} messages{focus_note} into a summary{pct_note}.")
 
 
 def _do_mcp_refresh(core, emit) -> None:

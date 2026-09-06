@@ -253,6 +253,7 @@ def test_compact_tab_completion():
     from ludvart.session import complete_slash
 
     assert complete_slash("/comp") == "/compact "
+    assert complete_slash("/compact last") == "/compact last-turn "
     print("/compact tab completion: OK")
 
 

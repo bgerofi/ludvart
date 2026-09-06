@@ -309,13 +309,17 @@ class AgentCore:
             return False
         return self._compact_history(keep_tail=keep_tail) is not None
 
-    def compact(self) -> str | None:
+    def compact(self, last_turn: bool = False) -> str | None:
         """Compact now regardless of how full the window is (the ``/compact``
         command). Returns the summary, or ``None`` if the request failed.
         """
-        return self._compact_history()
+        return self._compact_history(last_turn=last_turn)
 
-    def _compact_history(self, keep_tail: list[dict] | None = None) -> str | None:
+    def _compact_history(
+        self,
+        keep_tail: list[dict] | None = None,
+        last_turn: bool = False,
+    ) -> str | None:
         """Summarize the conversation and reseed the context from that summary.
 
         The model-facing history is replaced by a two-message seed; the visible
@@ -327,7 +331,7 @@ class AgentCore:
         (history left unchanged).
         """
         self.host.set_activity("Compacting context")
-        summary = self._summarize_history()
+        summary = self._summarize_history(last_turn=last_turn)
         if not summary:
             return None  # failed; keep going with the uncompacted history
         self.history = [
@@ -351,17 +355,32 @@ class AgentCore:
         self._persist()
         return summary
 
-    def _summarize_history(self) -> str | None:
+    def _summarize_history(self, last_turn: bool = False) -> str | None:
         """Ask the model to condense the history into a resumable brief."""
-        instruction = (
-            "You are about to run out of context window. Summarize the ENTIRE "
-            "conversation above into concise notes that let you CONTINUE the "
-            "task with no loss of essential information: the user's goal(s), the "
-            "decisions made, facts, commands and file paths discovered, the "
-            "current state of the work and the terminal, and the immediate next "
-            "steps. Write it as a compact brief to yourself. Omit greetings, "
-            "apologies, and filler."
-        )
+        if last_turn:
+            instruction = (
+                "Summarize the conversation as working context for continuing "
+                "ONLY the topic of the MOST RECENT user request and the response "
+                "or work it initiated. Retain earlier goals, decisions, facts, "
+                "constraints, commands, file paths, code changes, errors, and "
+                "terminal state only when they are relevant to continuing that "
+                "latest topic. Preserve unresolved questions, incomplete work, "
+                "and immediate next steps in enough detail to resume without "
+                "guessing. Discard unrelated earlier turns. Favor completeness "
+                "for the latest topic over maximum brevity, but omit greetings, "
+                "apologies, repetition, and filler. Write the result as a brief "
+                "to yourself."
+            )
+        else:
+            instruction = (
+                "You are about to run out of context window. Summarize the ENTIRE "
+                "conversation above into concise notes that let you CONTINUE the "
+                "task with no loss of essential information: the user's goal(s), "
+                "the decisions made, facts, commands and file paths discovered, "
+                "the current state of the work and the terminal, and the immediate "
+                "next steps. Write it as a compact brief to yourself. Omit "
+                "greetings, apologies, and filler."
+            )
         messages = [
             {
                 "role": "system",

@@ -462,13 +462,18 @@ def test_context_pct_flows_from_backend_to_client_panel():
     print("context usage reaches the client panel over the protocol: OK")
 
 
-def test_compact_command_compacts_the_backend_conversation():
-    """`/compact` is forwarded: the conversation and the model both live here."""
+def test_compact_last_turn_compacts_the_backend_conversation():
+    """`/compact last-turn` selects the focused instruction on the backend."""
     from ludvart import server
     from ludvart.llm import Turn
 
     class SummarizingLLM(_FakeBackendLLM):
+        def __init__(self):
+            super().__init__()
+            self.summary_instruction = ""
+
         def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+            self.summary_instruction = messages[-1]["content"]
             return Turn(
                 text="BRIEF",
                 assistant_message={"role": "assistant", "content": "BRIEF"},
@@ -477,6 +482,7 @@ def test_compact_command_compacts_the_backend_conversation():
 
     client_ch, backend_ch = _pipe_pair()
     core_box = []
+    llm = SummarizingLLM()
     orig_loop = server._request_loop
 
     def capture(channel, manager, core):
@@ -491,14 +497,14 @@ def test_compact_command_compacts_the_backend_conversation():
     server._request_loop = capture
     try:
         t = threading.Thread(
-            target=lambda: serve(backend_ch, llm=SummarizingLLM()), daemon=True
+            target=lambda: serve(backend_ch, llm=llm), daemon=True
         )
         t.start()
         client = BackendClient(client_ch)
         host = RecordingHost()
         assert client_ch.recv()["type"] == "hello"
 
-        client.command("compact", host)
+        client.command("compact last-turn", host)
 
         client_ch.close()
         t.join(timeout=2)
@@ -510,10 +516,13 @@ def test_compact_command_compacts_the_backend_conversation():
     # The backend history was reseeded from the summary...
     assert len(core.history) == 2, core.history
     assert "BRIEF" in core.history[0]["content"], core.history
+    assert "MOST RECENT user request" in llm.summary_instruction
     # ...and the client was told what happened, plus shown the summary marker.
-    assert any("Compacted 3 messages" in s for s in host.systems), host.systems
+    assert any(
+        "Compacted 3 messages around the last turn" in s for s in host.systems
+    ), host.systems
     assert host.summaries == ["BRIEF"], host.summaries
-    print("/compact compacts the backend conversation: OK")
+    print("/compact last-turn compacts the backend conversation: OK")
 
 
 def test_compact_command_declines_a_short_conversation():
@@ -550,7 +559,7 @@ def main():
     test_model_remove_command_over_backend()
     test_model_copilot_models_query_over_backend()
     test_context_pct_flows_from_backend_to_client_panel()
-    test_compact_command_compacts_the_backend_conversation()
+    test_compact_last_turn_compacts_the_backend_conversation()
     test_compact_command_declines_a_short_conversation()
     print("\nALL backend RPC tests passed.")
 

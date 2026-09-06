@@ -568,6 +568,21 @@ def test_compact_on_demand_ignores_the_threshold():
     print("on-demand compaction ignores the threshold: OK")
 
 
+def test_last_turn_compaction_uses_a_focused_instruction():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("a"), _text_turn("FOCUSED BRIEF")])
+    core = AgentCore(llm, host, system_prompt="SYS")
+    core.run_turn("latest request", "SCREEN-1")
+    core.history.append({"role": "user", "content": "filler"})
+
+    assert core.compact(last_turn=True) == "FOCUSED BRIEF"
+    instruction = llm.seen_messages[-1][-1]["content"]
+    assert "MOST RECENT user request" in instruction, instruction
+    assert "Discard unrelated earlier turns" in instruction, instruction
+    assert "Summarize the ENTIRE" not in instruction, instruction
+    print("last-turn compaction uses a focused instruction: OK")
+
+
 def test_failed_turn_is_rolled_back_out_of_the_history():
     """A turn that dies between a tool call and its result must leave no trace.
 
@@ -779,6 +794,7 @@ def main():
     test_past_snapshots_survive_a_resumed_session()
     test_a_resumed_session_renders_with_a_live_trailing_block()
     test_compact_on_demand_ignores_the_threshold()
+    test_last_turn_compaction_uses_a_focused_instruction()
     test_failed_turn_is_rolled_back_out_of_the_history()
     test_a_cancel_interrupts_the_stream_and_keeps_the_partial_answer()
     test_a_cancel_between_steps_stops_the_next_request()
