@@ -20,7 +20,12 @@ from typing import Sequence
 
 from . import tools as builtin
 from .llm import LLMClient, ToolCall, ToolSpec, Turn
-from .session import SUMMARY_MARKER, SUMMARY_MARKER_END
+from .session import (
+    SUMMARY_MARKER,
+    SUMMARY_MARKER_END,
+    USER_REQUEST_MARKER,
+    USER_REQUEST_MARKER_END,
+)
 from .terminal_host import TerminalHost
 
 #: Tools that must run where the terminal is (the client). Everything else is a
@@ -163,7 +168,7 @@ class AgentCore:
             f'<screenContext ts="{snapshot_ts}">\n'
             f"{snapshot}\n"
             "</screenContext>\n"
-            f"<userRequest>\n{question}\n</userRequest>"
+            f"{USER_REQUEST_MARKER}\n{question}\n{USER_REQUEST_MARKER_END}"
         )
         self.history.append({"role": "user", "content": user_content})
         # Where this turn starts, so a mid-loop compaction can carry it over.

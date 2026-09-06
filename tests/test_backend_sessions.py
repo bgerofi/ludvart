@@ -305,6 +305,107 @@ def test_sessions_rename_by_index_and_unquoted_title():
     print("/sessions rename <n> with an unquoted multi-word title: OK")
 
 
+class _RecordingChannel:
+    """Collects the panel updates a command handler pushes at the client."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, msg):
+        self.sent.append(msg)
+
+
+def _core_with_turns(n):
+    core = AgentCore(
+        _TextLLM(),
+        RecordingHost(),
+        system_prompt="SYS",
+        session=SessionStore.create_new(),
+    )
+    for i in range(1, n + 1):
+        core.run_turn(f"question {i}", "SCREEN")
+    return core
+
+
+def _questions(messages):
+    return [t for k, t in (tuple(m) for m in messages) if k == "you"]
+
+
+def test_fork_branches_the_conversation_and_switches_to_it():
+    from ludvart.server import _do_session_fork
+
+    with _tmp_sessions():
+        core = _core_with_turns(3)
+        parent_id = core.session.session_id
+        channel, emitted = _RecordingChannel(), []
+
+        _do_session_fork("2", core, channel, emitted.append)
+
+        assert core.session.session_id != parent_id, core.session.session_id
+        assert _questions(core.transcript) == ["question 1", "question 2"]
+        # Turn 2's answer is kept: the fork point is inclusive.
+        assert core.transcript[-1] == ("ludvart", "reply"), core.transcript[-1]
+        # One user + one assistant message per kept turn.
+        assert len(core.history) == 4, core.history
+
+        forked = load_session(core.session.session_id)
+        assert _questions(forked["messages"]) == ["question 1", "question 2"]
+        assert forked["title"].endswith("@2"), forked["title"]
+        # The parent is left exactly as it was.
+        assert _questions(load_session(parent_id)["messages"]) == [
+            "question 1", "question 2", "question 3"]
+        # The client is told to redraw the transcript and rebind the session.
+        kinds = [m.get("kind") for m in channel.sent]
+        assert kinds == ["transcript", "session"], kinds
+        assert channel.sent[1]["session_id"] == core.session.session_id
+    print("/sessions fork branches the conversation and switches to it: OK")
+
+
+def test_fork_rejects_a_turn_that_does_not_exist():
+    from ludvart.server import _do_session_fork
+
+    with _tmp_sessions():
+        core = _core_with_turns(2)
+        before = core.session.session_id
+        emitted = []
+
+        _do_session_fork("5", core, _RecordingChannel(), emitted.append)
+
+        assert "[1] to [2]" in emitted[0], emitted
+        # A rejected fork must not disturb the conversation it was run from.
+        assert core.session.session_id == before
+        assert _questions(core.transcript) == ["question 1", "question 2"]
+    print("/sessions fork rejects a turn that does not exist: OK")
+
+
+def test_fork_over_the_backend_command_path():
+    with _tmp_sessions():
+        current = SessionStore.create_new()
+        client_ch, backend_ch = _pipe_pair()
+        t = threading.Thread(
+            target=lambda: serve(
+                backend_ch, llm=_FakeBackendLLM(), session=current
+            ),
+            daemon=True,
+        )
+        t.start()
+        client = BackendClient(client_ch)
+        host = RecordingHost()
+        assert client_ch.recv()["type"] == "hello"
+        client.command("sessions fork 1", host)
+        client_ch.close()
+        t.join(timeout=2)
+        backend_ch.close()
+
+        # A backend with no turns yet has nothing to branch from, and says so
+        # rather than writing an empty session.
+        assert any("no turns yet" in s for s in host.systems), host.systems
+        assert list_sessions() == [] or all(
+            s["count"] == 0 for s in list_sessions()
+        )
+    print("/sessions fork reaches the backend command dispatcher: OK")
+
+
 def main():
     test_agent_core_persists_to_backend_session()
     test_sessions_list_over_backend()
@@ -315,6 +416,9 @@ def main():
     test_sessions_rename_over_backend()
     test_sessions_rename_by_index_and_unquoted_title()
     test_sessions_list_shows_title_over_backend()
+    test_fork_branches_the_conversation_and_switches_to_it()
+    test_fork_rejects_a_turn_that_does_not_exist()
+    test_fork_over_the_backend_command_path()
     print("\nALL backend session tests passed.")
 
 

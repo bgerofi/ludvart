@@ -15,6 +15,7 @@ from e2e_util import isolate_sessions
 from ludvart.session import (
     SessionStore,
     complete_slash,
+    fork_history_end,
     list_sessions,
     load_session,
     parse_rename_args,
@@ -24,6 +25,8 @@ from ludvart.session import (
     resolve_session_ref,
     sanitize_history,
     sessions_root,
+    turn_count,
+    turn_numbers,
 )
 
 # Running this file directly skips conftest, so isolate here too.
@@ -618,6 +621,99 @@ def test_complete_slash_rename():
     print("complete_slash completes /sessions rename: OK")
 
 
+def test_complete_slash_fork():
+    assert complete_slash("/sessions f") == "/sessions fork "
+    print("complete_slash completes /sessions fork: OK")
+
+
+def test_turn_numbers_pair_a_question_with_its_answer():
+    messages = [
+        ("you", "q1"),
+        ("ludvart", "a1"),
+        ("info", "a note"),
+        ("you", "q2"),
+        ("summary", "compacted"),
+        ("ludvart", "a2"),
+        ("system", "/help output"),
+    ]
+    assert turn_numbers(messages) == [1, 1, None, 2, None, 2, None]
+    assert turn_count(messages) == 2
+    print("turn numbers pair a question with its answer: OK")
+
+
+def test_turn_numbers_on_an_empty_transcript():
+    assert turn_numbers([]) == []
+    assert turn_count([]) == 0
+    # An answer with no question before it belongs to no exchange.
+    assert turn_numbers([("ludvart", "orphan")]) == [None]
+    print("turn numbers on an empty transcript: OK")
+
+
+def _user(question):
+    return {
+        "role": "user",
+        "content": f"<screenContext>x</screenContext>\n"
+                   f"<userRequest>\n{question}\n</userRequest>",
+    }
+
+
+def test_fork_history_end_cuts_after_the_turns_answer():
+    history = [
+        _user("q1"),
+        {"role": "assistant", "content": "a1"},
+        _user("q2"),
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "t"}]},
+        {"role": "tool", "tool_call_id": "t", "content": "out"},
+        {"role": "assistant", "content": "a2"},
+        _user("q3"),
+        {"role": "assistant", "content": "a3"},
+    ]
+    # Turn 2 keeps its tool round-trip and stops before turn 3's question.
+    assert fork_history_end(history, "q2", 2, 3) == 6
+    assert fork_history_end(history, "q1", 1, 3) == 2
+    # The last turn runs to the end of the history.
+    assert fork_history_end(history, "q3", 3, 3) == 8
+    print("fork_history_end cuts after the turn's answer: OK")
+
+
+def test_fork_history_end_skips_a_compaction_seed():
+    from ludvart.session import SUMMARY_MARKER, SUMMARY_MARKER_END
+
+    history = [
+        {"role": "user",
+         "content": f"{SUMMARY_MARKER}\nnotes\n{SUMMARY_MARKER_END}"},
+        {"role": "assistant", "content": "Understood."},
+        _user("q4"),
+        {"role": "assistant", "content": "a4"},
+        _user("q5"),
+        {"role": "assistant", "content": "a5"},
+    ]
+    # The seed is context, not a turn, so it is kept and never counted.
+    assert fork_history_end(history, "q4", 4, 5) == 4
+    print("fork_history_end skips a compaction seed: OK")
+
+
+def test_fork_history_end_reports_a_turn_that_was_compacted_away():
+    history = [_user("q9"), {"role": "assistant", "content": "a9"}]
+    assert fork_history_end(history, "q1", 1, 9) is None
+    print("fork_history_end reports a turn that was compacted away: OK")
+
+
+def test_fork_history_end_disambiguates_a_repeated_question():
+    history = [
+        _user("yes"),
+        {"role": "assistant", "content": "a1"},
+        _user("other"),
+        {"role": "assistant", "content": "a2"},
+        _user("yes"),
+        {"role": "assistant", "content": "a3"},
+    ]
+    # Both turn 1 and turn 3 ask "yes"; counting picks them apart.
+    assert fork_history_end(history, "yes", 1, 3) == 2
+    assert fork_history_end(history, "yes", 3, 3) == 6
+    print("fork_history_end disambiguates a repeated question: OK")
+
+
 if __name__ == "__main__":
     test_path_layout_utc()
     test_path_layout_converts_to_utc()
@@ -650,4 +746,11 @@ if __name__ == "__main__":
     test_resolve_session_ref()
     test_complete_slash_rename()
     test_complete_slash_mcp_commands()
+    test_complete_slash_fork()
+    test_turn_numbers_pair_a_question_with_its_answer()
+    test_turn_numbers_on_an_empty_transcript()
+    test_fork_history_end_cuts_after_the_turns_answer()
+    test_fork_history_end_skips_a_compaction_seed()
+    test_fork_history_end_reports_a_turn_that_was_compacted_away()
+    test_fork_history_end_disambiguates_a_repeated_question()
     print("\nALL session-store tests passed.")

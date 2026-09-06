@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from .lineedit import LineEditor
 from .overlay import _wrap
+from .session import turn_numbers
 
 _RESET = b"\x1b[0m"
 _EOL = b"\x1b[K"
@@ -301,16 +302,28 @@ class AiPanel:
 
     def _content_lines(self) -> list[bytes]:
         lines: list[bytes] = []
-        for kind, text in self._messages:
+        numbers = turn_numbers(self._messages)
+        digits = max((len(str(n)) for n in numbers if n), default=0)
+        # "[N] ", right-aligned so the text column does not jog at 10 and 100.
+        label_w = digits + 3 if digits else 0
+        for (kind, text), number in zip(self._messages, numbers):
             logical = text.split("\n")
+            if number is None:
+                label = b""
+                pad = b""
+            else:
+                label = _DIM + f"[{number:>{digits}}] ".encode() + _RESET
+                pad = b" " * label_w
             if kind == "you":
                 segs: list[str] = []
                 for para in logical:
-                    segs += _wrap(para, max(1, self.cols - 2))
+                    segs += _wrap(para, max(1, self.cols - label_w - 2))
                 for i, seg in enumerate(segs):
                     prefix = b"> " if i == 0 else b"  "
                     lines.append(
-                        _CYAN + prefix + seg.encode("utf-8", "replace") + _RESET + _EOL
+                        (label if i == 0 else pad)
+                        + _CYAN + prefix + seg.encode("utf-8", "replace")
+                        + _RESET + _EOL
                     )
             elif kind == "info":
                 for para in logical:
@@ -343,9 +356,14 @@ class AiPanel:
                             _DIM + seg.encode("utf-8", "replace") + _RESET + _EOL
                         )
             else:
+                first = True
                 for para in logical:
-                    for seg in _wrap(para, self.cols):
-                        lines.append(seg.encode("utf-8", "replace") + _RESET + _EOL)
+                    for seg in _wrap(para, max(1, self.cols - label_w)):
+                        lines.append(
+                            (label if first else pad)
+                            + seg.encode("utf-8", "replace") + _RESET + _EOL
+                        )
+                        first = False
         if self.interim:
             for para in self.interim.split("\n"):
                 for seg in _wrap(para, self.cols):

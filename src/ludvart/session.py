@@ -74,6 +74,13 @@ _PERSISTED_KINDS = ("you", "ludvart", "info", "summary")
 SUMMARY_MARKER = "<conversationSummary>"
 SUMMARY_MARKER_END = "</conversationSummary>"
 
+# Tags wrapping the user's question inside a turn's model-facing message. The
+# rest of that message is a terminal snapshot, which can quote anything at all,
+# so these are what make a question findable in the history (see
+# :func:`fork_history_end`).
+USER_REQUEST_MARKER = "<userRequest>"
+USER_REQUEST_MARKER_END = "</userRequest>"
+
 
 def sessions_root() -> Path:
     """Return the root directory that holds all session folders.
@@ -101,6 +108,61 @@ def persisted_messages(
 ) -> list[tuple[str, str]]:
     """Drop ephemeral (slash-command) messages so only the conversation saves."""
     return [(k, t) for (k, t) in messages if k in _PERSISTED_KINDS]
+
+
+def turn_numbers(messages) -> list[int | None]:
+    """Number the exchanges in a transcript: a question and its answers share one.
+
+    The numbering is positional and derived fresh from the transcript rather
+    than stored, so it always matches what the panel is showing and never has to
+    be migrated. Lines belonging to no exchange -- notes, slash-command output,
+    compaction summaries -- are ``None``.
+    """
+    out: list[int | None] = []
+    turn = 0
+    for kind, _text in messages:
+        if kind == "you":
+            turn += 1
+            out.append(turn)
+        elif kind == "ludvart":
+            out.append(turn or None)
+        else:
+            out.append(None)
+    return out
+
+
+def turn_count(messages) -> int:
+    """How many numbered exchanges a transcript holds."""
+    return sum(1 for kind, _text in messages if kind == "you")
+
+
+def fork_history_end(
+    llm_history: list[dict[str, Any]], question: str, turn: int, total: int
+) -> int | None:
+    """Index one past the last history message of ``turn``, or ``None`` if gone.
+
+    The transcript keeps every exchange but the model-facing history does not: a
+    compaction replaces older turns with a summary, and a turn abandoned
+    mid-flight is rolled back. Counting alone would therefore line the two up
+    wrongly, so the turn is found by its question text and counting is used only
+    to choose between occurrences when the same question was asked twice.
+    """
+    starts = [
+        i
+        for i, msg in enumerate(llm_history)
+        if msg.get("role") == "user"
+        and not str(msg.get("content", "")).lstrip().startswith(SUMMARY_MARKER)
+    ]
+    wrapped = f"{USER_REQUEST_MARKER}\n{question}\n{USER_REQUEST_MARKER_END}"
+    matches = [
+        k for k, i in enumerate(starts)
+        if wrapped in str(llm_history[i].get("content", ""))
+    ]
+    if not matches:
+        return None
+    expected = len(starts) - (total - turn) - 1
+    k = min(matches, key=lambda m: abs(m - expected))
+    return starts[k + 1] if k + 1 < len(starts) else len(llm_history)
 
 
 class SessionStore:
@@ -456,7 +518,7 @@ SLASH_COMMANDS: dict[str, list[str]] = {
     "model": ["add", "list", "remove", "use"],
     "perf": ["dump", "summary"],
     "revoke_approval": [],
-    "sessions": ["list", "load", "new", "rename"],
+    "sessions": ["fork", "list", "load", "new", "rename"],
 }
 
 # One-line usage + description for each command, shown by ``/help``. Ordered the
@@ -489,6 +551,11 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
     ("/sessions list", "List saved conversation sessions (current is marked *)."),
     ("/sessions load <n>|<id>", "Load and resume a saved session by number or id."),
     ("/sessions new", "Start a fresh, empty conversation in a new session file."),
+    (
+        "/sessions fork <turn>",
+        "Branch the current conversation into a new session ending at turn "
+        "[<turn>], and switch to it.",
+    ),
     (
         "/sessions rename <id> \"Title\"",
         "Give a saved session a title so it is easy to find in the list.",

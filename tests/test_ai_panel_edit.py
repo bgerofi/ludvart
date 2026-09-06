@@ -253,6 +253,48 @@ def test_a_system_row_is_clipped_to_the_width_not_wrapped():
     print("a system row is clipped to the width, not wrapped: OK")
 
 
+def test_each_exchange_is_numbered_in_the_transcript():
+    panel = AiPanel(cols=60, height=8, provider="test")
+    panel.add_user("first question")
+    panel.add_reply("first answer")
+    panel.add_info("a note")
+    panel.add_user("second question")
+    panel.add_reply("second answer")
+    lines = panel._content_lines()
+
+    assert b"[1] " in lines[0] and b"> first question" in lines[0], lines[0]
+    assert b"[1] " in lines[1] and b"first answer" in lines[1], lines[1]
+    # A note belongs to no exchange, so it is not numbered.
+    assert b"] " not in lines[2] and b"a note" in lines[2], lines[2]
+    assert b"[2] " in lines[3], lines[3]
+    assert b"[2] " in lines[4], lines[4]
+    print("each exchange is numbered in the transcript: OK")
+
+
+def test_turn_numbers_are_right_aligned_so_the_text_column_holds():
+    panel = AiPanel(cols=60, height=8, provider="test")
+    for i in range(10):
+        panel.add_user(f"q{i}")
+        panel.add_reply(f"a{i}")
+    lines = panel._content_lines()
+    # Two digits are now in play, so the single-digit turns are padded.
+    assert b"[ 1] " in lines[0], lines[0]
+    assert b"[10] " in lines[18], lines[18]
+    print("turn numbers are right aligned: OK")
+
+
+def test_a_wrapped_message_indents_under_its_number():
+    panel = AiPanel(cols=24, height=8, provider="test")
+    panel.add_user("a question long enough to wrap onto another row")
+    lines = panel._content_lines()
+    assert len(lines) > 1, lines
+    assert b"[1] " in lines[0], lines[0]
+    # The continuation lines up with the first line's text, not the number.
+    assert lines[1].startswith(b"    "), lines[1]
+    assert b"] " not in lines[1], lines[1]
+    print("a wrapped message indents under its number: OK")
+
+
 if __name__ == "__main__":
     test_line_editor()
     test_input_view_scroll()
@@ -262,4 +304,7 @@ if __name__ == "__main__":
     test_shift_movement_selects_and_editing_replaces_the_selection()
     test_a_selection_is_shown_in_reverse_video()
     test_a_system_row_is_clipped_to_the_width_not_wrapped()
+    test_each_exchange_is_numbered_in_the_transcript()
+    test_turn_numbers_are_right_aligned_so_the_text_column_holds()
+    test_a_wrapped_message_indents_under_its_number()
     print("all panel-edit tests passed")

@@ -462,12 +462,17 @@ def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
             label = " ".join(label.split())  # a preview may span lines
             row(f"{marker}{str(i).rjust(width)}. {s['id']}  "
                 f"({s['count']} msgs)  {label}")
-        emit('Use /sessions load <n>|<id>, new, or rename <id> "Title".')
+        emit('Use /sessions load <n>|<id>, new, fork <turn>, or rename <id> "Title".')
     elif sub == "load":
         if len(args) < 2:
             emit("Usage: /sessions load <n>|<id>")
         else:
             _do_session_load(args[1], core, channel, emit)
+    elif sub == "fork":
+        if len(args) < 2:
+            emit("Usage: /sessions fork <turn>")
+        else:
+            _do_session_fork(args[1], core, channel, emit)
     elif sub == "new":
         core.reset()
         core.session = SessionStore.create_new()
@@ -551,6 +556,66 @@ def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:
         message(MsgType.PANEL_UPDATE, kind="session", session_id=session_id)
     )
     emit(f"Loaded session {session_id} ({len(messages)} msgs).")
+
+
+def _do_session_fork(ref: str, core, channel: FrameChannel, emit) -> None:
+    """Branch the running conversation into a new session ending at turn ``ref``."""
+    from .session import (
+        SessionStore,
+        fork_history_end,
+        turn_count,
+        turn_numbers,
+    )
+
+    if not ref.isdigit():
+        emit("Usage: /sessions fork <turn>")
+        return
+    turn = int(ref)
+    total = turn_count(core.transcript)
+    if total == 0:
+        emit("Nothing to fork: this conversation has no turns yet.")
+        return
+    if not 1 <= turn <= total:
+        emit(f"No turn [{turn}] here; this conversation runs [1] to [{total}].")
+        return
+
+    numbers = turn_numbers(core.transcript)
+    cut = max(i for i, n in enumerate(numbers) if n == turn)
+    question = next(t for (k, t), n in zip(core.transcript, numbers)
+                    if n == turn and k == "you")
+    end = fork_history_end(core.history, question, turn, total)
+    if end is None:
+        emit(f"Turn [{turn}] is no longer in the model's history (compacted "
+             "away), so there is nothing to branch from.")
+        return
+
+    transcript = core.transcript[: cut + 1]
+    history = core.history[:end]
+    parent = core.session.session_id if core.session is not None else None
+    parent_title = getattr(core.session, "title", "") if core.session else ""
+
+    store = SessionStore.create_new()
+    store.title = (
+        f"{parent_title} (fork @{turn})" if parent_title
+        else f"fork of {parent} @{turn}"
+    )
+    # The branch has spent nothing yet, so resume() restarts its token totals.
+    core.resume(transcript, history)
+    core.session = store
+    core._persist()
+    channel.send(
+        message(
+            MsgType.PANEL_UPDATE,
+            kind="transcript",
+            messages=[list(m) for m in core.transcript],
+        )
+    )
+    channel.send(
+        message(
+            MsgType.PANEL_UPDATE, kind="session", session_id=store.session_id
+        )
+    )
+    emit(f"Forked [1]-[{turn}] into {store.session_id} and switched to it.")
 
 
 def _do_model_use(token: str, manager, core, channel: FrameChannel, emit) -> None:
