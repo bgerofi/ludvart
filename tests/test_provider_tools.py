@@ -102,6 +102,66 @@ def test_openai_nonstream_tool_call():
     print("openai non-stream tool call: OK")
 
 
+def test_openai_falls_back_to_max_completion_tokens_and_remembers_it():
+    requests = []
+
+    def handler(kw):
+        requests.append(kw)
+        if "max_tokens" in kw:
+            raise RuntimeError(
+                "Unsupported parameter: 'max_tokens' is not supported with this "
+                "model. Use 'max_completion_tokens' instead."
+            )
+        return _ns(
+            choices=[_ns(message=_ns(content="ok", tool_calls=None))],
+            usage=_ns(prompt_tokens=2, completion_tokens=1, total_tokens=3),
+        )
+
+    client = _openai_client(handler)
+    assert client.complete([{"role": "user", "content": "ping"}], 16) == "ok"
+    turn = client.converse([{"role": "user", "content": "again"}], max_tokens=32)
+
+    assert turn.text == "ok"
+    assert len(requests) == 3, requests
+    assert requests[0]["max_tokens"] == 16
+    assert requests[1]["max_completion_tokens"] == 16
+    assert requests[2]["max_completion_tokens"] == 32
+    assert all("max_tokens" not in req for req in requests[1:])
+    print("openai max_completion_tokens fallback is remembered: OK")
+
+
+def test_openai_disables_reasoning_when_chat_tools_require_it():
+    requests = []
+
+    def handler(kw):
+        requests.append(kw)
+        if kw.get("reasoning_effort") != "none":
+            raise RuntimeError(
+                "Function tools with reasoning_effort are not supported for "
+                "gpt-6-astra in /v1/chat/completions. To use function tools, "
+                "use /v1/responses or set reasoning_effort to 'none'."
+            )
+        return _ns(
+            choices=[_ns(message=_ns(content="ok", tool_calls=None))],
+            usage=_ns(prompt_tokens=2, completion_tokens=1, total_tokens=3),
+        )
+
+    client = _openai_client(handler)
+    turn = client.converse(
+        [{"role": "user", "content": "use a tool"}], tools=[_WEATHER]
+    )
+    again = client.converse(
+        [{"role": "user", "content": "again"}], tools=[_WEATHER]
+    )
+
+    assert turn.text == again.text == "ok"
+    assert len(requests) == 3, requests
+    assert "reasoning_effort" not in requests[0]
+    assert requests[1]["reasoning_effort"] == "none"
+    assert requests[2]["reasoning_effort"] == "none"
+    print("openai disables reasoning when chat tools require it: OK")
+
+
 def test_openai_stream_tool_call_and_text():
     def handler(kw):
         if not kw.get("stream"):
@@ -391,6 +451,8 @@ def test_google_thinking_gate_and_thought_streaming():
 
 def main():
     test_openai_nonstream_tool_call()
+    test_openai_falls_back_to_max_completion_tokens_and_remembers_it()
+    test_openai_disables_reasoning_when_chat_tools_require_it()
     test_openai_stream_tool_call_and_text()
     test_openai_stream_reasoning_narrated_not_in_answer()
     test_google_nonstream_tool_call()

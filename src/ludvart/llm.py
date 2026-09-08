@@ -1141,6 +1141,56 @@ class OpenAIClient(LLMClient):
             api_key=config.api_key, base_url=base_url,
             timeout=_httpx_timeout(timeout), max_retries=0,
         )
+        self._chat_token_limit_param = "max_tokens"
+        self._chat_tools_disable_reasoning = False
+
+    def _create_chat_completion(self, request: dict) -> Any:
+        """Send a Chat Completions request with adaptive model compatibility.
+
+        Newer OpenAI model families reject the legacy ``max_tokens`` field in
+        favor of ``max_completion_tokens``. Deployment aliases make model-name
+        detection unreliable, so learn from that explicit rejection and retain
+        the accepted spelling for all later requests on this client. Likewise,
+        some reasoning models require reasoning to be disabled when function
+        tools are sent through Chat Completions; learn that requirement only
+        when the endpoint reports it explicitly.
+        """
+        request = dict(request)
+        token_limit = request.pop("max_tokens", None)
+        if token_limit is not None:
+            request[self._chat_token_limit_param] = token_limit
+        if self._chat_tools_disable_reasoning and request.get("tools"):
+            request["reasoning_effort"] = "none"
+        while True:
+            try:
+                return self._client.chat.completions.create(**request)
+            except Exception as exc:
+                detail = str(exc).lower()
+                if (
+                    self._chat_token_limit_param == "max_tokens"
+                    and "max_tokens" in detail
+                    and "max_completion_tokens" in detail
+                    and (
+                        "unsupported parameter" in detail
+                        or "not supported" in detail
+                    )
+                ):
+                    self._chat_token_limit_param = "max_completion_tokens"
+                    token_limit = request.pop("max_tokens", None)
+                    if token_limit is not None:
+                        request["max_completion_tokens"] = token_limit
+                    continue
+                if (
+                    not self._chat_tools_disable_reasoning
+                    and request.get("tools")
+                    and "reasoning_effort" in detail
+                    and "not supported" in detail
+                    and "'none'" in detail
+                ):
+                    self._chat_tools_disable_reasoning = True
+                    request["reasoning_effort"] = "none"
+                    continue
+                raise
 
     def detect_context_window(self) -> int:
         # The standard OpenAI API doesn't report context size, but many
@@ -1160,10 +1210,12 @@ class OpenAIClient(LLMClient):
 
     def complete(self, messages: Sequence[Message], max_tokens: int = 1024) -> str:
         resp = self._request(
-            lambda: self._client.chat.completions.create(
-                model=self.config.model,
-                messages=list(messages),
-                max_tokens=max_tokens,
+            lambda: self._create_chat_completion(
+                {
+                    "model": self.config.model,
+                    "messages": list(messages),
+                    "max_tokens": max_tokens,
+                }
             )
         )
         self._last_usage = usage_from_response(resp, self.context_window)
@@ -1198,7 +1250,7 @@ class OpenAIClient(LLMClient):
         return kwargs
 
     def _send_turn(self, request: Any) -> Turn:
-        resp = self._client.chat.completions.create(**request)
+        resp = self._create_chat_completion(request)
         try:
             msg = resp.choices[0].message
         except (AttributeError, IndexError, TypeError) as exc:
@@ -1228,7 +1280,7 @@ class OpenAIClient(LLMClient):
         slots: dict[int, dict] = {}
         order: list[int] = []
         usage: Usage | None = None
-        for chunk in self._client.chat.completions.create(**stream_req):
+        for chunk in self._create_chat_completion(stream_req):
             chunk_usage = usage_from_response(chunk, self.context_window)
             if chunk_usage is not None:
                 usage = chunk_usage
