@@ -320,12 +320,20 @@ def op_read(a):
     with open(a.path, "rb") as f:
         data = f.read()
     lines = data.split(b"\n")
+    # A trailing newline terminates the last line, it does not start a new
+    # one: "a\nb\n" is two lines, not three. split() leaves a phantom empty
+    # element for it, so drop it and remember to put the newline back.
+    trailing = bool(lines) and lines[-1] == b""
+    if trailing:
+        lines.pop()
     total = len(lines)
     rng = "all"
     if a.start is not None or a.end is not None:
         s = (a.start or 1) - 1
         e = a.end if a.end is not None else total
         data = b"\n".join(lines[s:e])
+        if data and trailing and e >= total:
+            data += b"\n"
         rng = "%d-%d" % (s + 1, e)
     return emit("read", data, 0, path=a.path, lines=total, range=rng)
 
