@@ -332,7 +332,9 @@ def op_read(a):
         s = (a.start or 1) - 1
         e = a.end if a.end is not None else total
         data = b"\n".join(lines[s:e])
-        if data and trailing and e >= total:
+        # An empty file has no line to terminate; a file holding just "\n" has
+        # one, so the test is whether a line exists, not whether it has text.
+        if trailing and total and e >= total:
             data += b"\n"
         rng = "%d-%d" % (s + 1, e)
     return emit("read", data, 0, path=a.path, lines=total, range=rng)

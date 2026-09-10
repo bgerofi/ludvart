@@ -366,6 +366,31 @@ def test_a_missing_file_still_answers_with_a_frame():
     print("a missing file answers with a frame: OK")
 
 
+def test_read_counts_lines_and_returns_the_file_unchanged():
+    """A read that loses the final newline makes read-edit-write lossy."""
+    cases = {
+        "a\nb\nc\n": 3,
+        "a\nb\nc": 3,
+        "": 0,
+        "\n": 1,
+        "\n\n\n": 3,
+        "a\n\nc\n": 3,
+        "\u00e9\u4e2d\n\u00e9\n": 2,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "f.txt")
+        for content, expected in cases.items():
+            with open(path, "w", newline="") as fh:
+                fh.write(content)
+            r = run_helper("read", path, "--start", "1", "--end", "500")
+            rows = r.stdout.splitlines()
+            assert "lines=%d " % expected in rows[-1], (content, rows[-1])
+            payload = "" if rows[1].startswith("<<<") else rows[1]
+            got = base64.b64decode(payload).decode() if payload else ""
+            assert got == content, (content, got)
+    print("read counts lines and returns the file unchanged: OK")
+
+
 def test_the_spec_names_the_one_subcommand_that_breaks_the_pattern():
     """Six subcommands demonstrate "path first" and one contradicts it.
 
@@ -518,6 +543,7 @@ if __name__ == "__main__":
     test_a_near_miss_option_name_is_understood_not_refused()
     test_a_b64_option_refuses_anything_that_is_not_base64()
     test_a_missing_file_still_answers_with_a_frame()
+    test_read_counts_lines_and_returns_the_file_unchanged()
     test_search_survives_its_arguments_arriving_backwards()
     test_the_spec_names_the_one_subcommand_that_breaks_the_pattern()
     test_command_is_quote_safe()

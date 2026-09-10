@@ -673,7 +673,7 @@ class _ReadingHost(RecordingHost):
 def test_read_file_returns_the_decoded_file_not_the_screen():
     """Reading off the screen is what this tool exists to replace."""
     content = "alpha\nbeta\ngamma\n"
-    host = _ReadingHost(content, total=4)
+    host = _ReadingHost(content, total=3)
     core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
 
     out = core._run_tool(
@@ -685,7 +685,7 @@ def test_read_file_returns_the_decoded_file_not_the_screen():
     assert name == "inject_input", name
     assert args["text"] == "~/.ludvart/bin/ludvart_helper read f.txt --start 1 --end 500"
     assert content in out, out
-    assert "lines 1-4 (of 4)" in out, out
+    assert "lines 1-3 (of 3)" in out, out
     assert "More lines follow" not in out, out
     print("read_file returns the decoded file: OK")
 
