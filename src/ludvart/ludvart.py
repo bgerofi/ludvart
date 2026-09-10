@@ -1247,8 +1247,15 @@ class Ludvart:
             panel.thinking = False
             panel.interim = ""
 
+    #: A ``--b64``/``--old-b64``/``--new-b64`` option and the blob it carries.
+    _HELPER_B64_ARG_RE = re.compile(r"--(?:([\w-]+)-)?b64\s+(\S+)")
+
     def _inject_approval_preview(self, text: str) -> str:
-        """Return a readable preview for an inject_input approval request."""
+        """Return a readable preview for an inject_input approval request.
+
+        Helper calls carry their real payload in base64, so decode it: the gate
+        is worth nothing if the user is asked to approve an opaque blob.
+        """
         helper_run = re.search(
             r"(?:^|[;&|]\s*)\S*ludvart_helper\s+run\s+--b64\s+(\S+)", text
         )
@@ -1257,7 +1264,19 @@ class Ludvart:
                 return base64.b64decode(helper_run.group(1), validate=True).decode("utf-8")
             except (ValueError, UnicodeDecodeError):
                 pass
+        if "ludvart_helper" in text:
+            return self._HELPER_B64_ARG_RE.sub(self._decode_b64_arg, text)
         return text
+
+    @staticmethod
+    def _decode_b64_arg(match: "re.Match[str]") -> str:
+        """Render one base64 helper argument as readable text, or leave it be."""
+        name, blob = match.group(1), match.group(2)
+        try:
+            clear = base64.b64decode(blob, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return match.group(0)
+        return f"--{name} {clear!r}" if name else repr(clear)
 
     def _inject_approval_prompt(self, text: str) -> str:
         """Prompt line for an inject_input approval request.

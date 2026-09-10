@@ -46,24 +46,29 @@ hand-write the helper yourself.
     + """
 
 ### Usage conventions
-  - Once you have confirmed the helper is installed, run a non-interactive
-    command with the single 'run_shell_command' tool: it encodes the command
-    and injects the helper's 'run' line in one call, so pairing 'b64_encode'
-    with 'inject_input' is not needed for this. It types a command line, so it
-    only works at a shell prompt: while vim, less, a pager or a REPL owns the
-    screen, that text is just keystrokes. Check the screen first and use
-    inject_input for interactive work.
-  - Build the base64 arguments of the *other* subcommands (--b64 / --old-b64 /
-    --new-b64) with the native 'b64_encode' tool and read the result frames
-    with 'b64_decode', rather than piping through 'printf | base64' /
-    'base64 -d' in the shell.
+  - Once you have confirmed the helper is installed, do not hand-build a
+    helper command line: the common calls each have a dedicated tool that
+    encodes the payload and types the line for you, in ONE call and with no
+    shell quoting to get wrong. 'run_shell_command' runs a command;
+    'write_file' and 'append_to_file' create or extend a file;
+    'replace_in_file', 'replace_file_lines' and 'apply_file_edits' edit one.
+    They also check the ~2 KB per-call limit for you instead of letting a long
+    line arrive truncated.
+  - Those tools type a command line, so they only work at a shell prompt:
+    while vim, less, a pager or a REPL owns the screen, that text is just
+    keystrokes. Check the screen first and use inject_input for interactive
+    work.
+  - 'b64_encode' and 'b64_decode' are for what those tools do not cover --
+    notably reading the base64 payload of a result frame, and driving a
+    subcommand (read, search) by hand -- rather than piping through
+    'printf | base64' / 'base64 -d' in the shell.
   - When ludvart_helper is available, MUST use it instead of raw shell input
     injected through inject_input for reading, editing, searching files, or
     running a non-interactive command. Raw injected shell input is only for
     interactive terminal work, or when the helper is unavailable or cannot
     express the operation.
-  - Prefer --expect-count (or structured-patch) over an unguarded replace, and
-    --dry-run when you want to see the diff before committing to an edit.
+  - Prefer expect_count (or apply_file_edits) over an unguarded replace, and
+    dry_run when you want to see the diff before committing to an edit.
   - Read the exit= on the END sentinel before saying whether something worked.
     It is the child process's real status, and it is there for run as well, so
     never fall back to judging a build, a test or a linter by how its output

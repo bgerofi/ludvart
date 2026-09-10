@@ -462,12 +462,15 @@ class AgentCore:
     #: written to the persisted session.
     _TOOL_REMINDER = (
         "<reminder>If you are operating on a console/terminal, remember to use "
-        "your ludvart helper tools (read, write, append, replace, replace-range, "
-        "structured-patch, search, run) for file and command operations rather "
-        "than improvising ad-hoc shell commands. The helper is NOT on PATH: "
-        "always invoke it by its full path, ~/.ludvart/bin/ludvart_helper. If "
-        "it is genuinely not installed there, ask the user to run the "
-        "/init_helpers command in the ludvart panel.</reminder>"
+        "your ludvart helper tools for file and command operations rather than "
+        "improvising ad-hoc shell commands: run_shell_command, write_file, "
+        "append_to_file, replace_in_file, replace_file_lines and "
+        "apply_file_edits each encode the payload and type the helper line in "
+        "a single call. For anything they do not cover, the helper is NOT on "
+        "PATH: always invoke it by its full path, "
+        "~/.ludvart/bin/ludvart_helper. If it is genuinely not installed "
+        "there, ask the user to run the /init_helpers command in the ludvart "
+        "panel.</reminder>"
     )
 
     #: Introduces the live screen inside the trailing block, so the model knows
@@ -560,6 +563,8 @@ class AgentCore:
             return builtin.b64_encode(call.input)
         if call.name == "run_shell_command":
             return self._tool_run_command(call.input)
+        if call.name in builtin.HELPER_EDIT_SUBCOMMANDS:
+            return self._tool_helper_edit(call.name, call.input)
         if call.name == "b64_decode":
             return builtin.b64_decode(call.input)
         if call.name == "web_search":
@@ -574,12 +579,22 @@ class AgentCore:
             return self.mcp.call_tool(call.name, dict(call.input))
         return f"[ludvart] unknown tool: {call.name}"
 
+    def _inject_helper_line(self, line: str) -> str:
+        """Type one ``ludvart_helper`` invocation into the terminal.
+
+        Routed through inject_input rather than injected directly so the user's
+        approval gate still fires, and still previews the decoded payload.
+        """
+        return self.host.run_terminal_tool(
+            "inject_input",
+            {"text": line, "submit": True, "interpret_escapes": False},
+        )
+
     def _tool_run_command(self, args: dict) -> str:
         """Encode a shell command and inject it as one ``ludvart_helper run`` line.
 
         Collapses what used to be a b64_encode call followed by an inject_input
-        call. It goes out through the ordinary inject_input path, so the user's
-        approval gate still fires and still previews the decoded command.
+        call.
         """
         command = args.get("command")
         if not isinstance(command, str) or not command.strip():
@@ -587,14 +602,15 @@ class AgentCore:
                 "[ludvart] run_shell_command: 'command' must be a "
                 "non-empty string."
             )
-        return self.host.run_terminal_tool(
-            "inject_input",
-            {
-                "text": builtin.helper_run_line(command),
-                "submit": True,
-                "interpret_escapes": False,
-            },
-        )
+        return self._inject_helper_line(builtin.helper_run_line(command))
+
+    def _tool_helper_edit(self, name: str, args: dict) -> str:
+        """Encode a file edit and inject it as one ``ludvart_helper`` line."""
+        try:
+            line = builtin.helper_edit_line(name, dict(args))
+        except ValueError as exc:
+            return f"[ludvart] {name}: {exc}."
+        return self._inject_helper_line(line)
 
     # -- past screen snapshots ------------------------------------------------
 

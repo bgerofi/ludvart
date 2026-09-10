@@ -16,7 +16,9 @@ and the client renders their names in tool-call notes.
 from __future__ import annotations
 
 import base64
+import json
 import os
+import shlex
 
 from .llm import ToolSpec
 
@@ -26,6 +28,23 @@ CLIENT_TOOL_NAMES = frozenset({"inject_input", "capture_screen_history"})
 
 #: The helper is deliberately not on PATH, so every call spells out its path.
 HELPER_PATH = "~/.ludvart/bin/ludvart_helper"
+
+#: The helper is reached by typing a command line, and that channel carries only
+#: about 2 KB before it truncates -- which would run a mangled command rather
+#: than fail cleanly, so an oversized call is refused here instead.
+HELPER_MAX_LINE = 2000
+
+#: File-editing tools, and the ``ludvart_helper`` subcommand each one wraps.
+HELPER_EDIT_SUBCOMMANDS = {
+    "write_file": "write",
+    "append_to_file": "append",
+    "replace_in_file": "replace",
+    "replace_file_lines": "replace-range",
+    "apply_file_edits": "structured-patch",
+}
+
+#: ``append`` is the one edit subcommand with nothing to preview.
+HELPER_DRY_RUN_TOOLS = frozenset(HELPER_EDIT_SUBCOMMANDS) - {"append_to_file"}
 
 #: Cap on how much fetch_url writes to /tmp, so a hostile or accidental huge
 #: response cannot fill the disk on the host running ludvart.
@@ -160,6 +179,232 @@ def builtin_tool_specs() -> list[ToolSpec]:
             },
         ),
         ToolSpec(
+            name="write_file",
+            description=(
+                "Create or overwrite a file on the user's machine (the one in "
+                "the terminal, not the host ludvart runs on) in ONE call: the "
+                "content is base64-encoded here and typed as a single helper "
+                "'write' line, so no b64_encode call and no shell quoting are "
+                "needed. Needs the helper installed and a shell prompt on "
+                "screen, exactly like run_shell_command. Parent directories "
+                "are created, the previous contents are kept beside the file "
+                "as PATH.ludvart.bak, and a .py file is compile-checked after "
+                "writing. About 2 KB of content fits in a call: for more, "
+                "write the first chunk here and add the rest with "
+                "append_to_file."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File to write, on the terminal's machine.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "The exact text to write. Do not base64-encode it "
+                            "yourself; that is done for you."
+                        ),
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, write nothing and return a unified diff "
+                            "of the change instead. Defaults to false."
+                        ),
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        ),
+        ToolSpec(
+            name="append_to_file",
+            description=(
+                "Append text to a file on the user's machine (the terminal's, "
+                "not ludvart's host) in ONE call, base64-encoded for you, "
+                "creating the file if it is absent. This is how a file too "
+                "big for a single ~2 KB call is built: write_file the first "
+                "chunk, then one append_to_file per remaining chunk, checking "
+                "the reported bytes= each time so a short chunk is caught at "
+                "once."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File to append to, on the terminal's machine.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "The exact text to append. Do not base64-encode "
+                            "it yourself."
+                        ),
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        ),
+        ToolSpec(
+            name="replace_in_file",
+            description=(
+                "Replace exact literal text in a file on the user's machine "
+                "in ONE call: the old and new text are both base64-encoded "
+                "for you. The match is literal, never a regex. Every "
+                "occurrence is replaced unless you limit it; set expect_count "
+                "to refuse the edit unless the old text occurs exactly that "
+                "many times, which is the safe way to change one known site. "
+                "Nothing is written if the old text is not found or the count "
+                "does not match, so a failed edit cannot half-apply."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File to edit, on the terminal's machine.",
+                    },
+                    "old": {
+                        "type": "string",
+                        "description": (
+                            "The exact literal text to find, reproduced "
+                            "character for character."
+                        ),
+                    },
+                    "new": {
+                        "type": "string",
+                        "description": "The text to put in its place.",
+                    },
+                    "expect_count": {
+                        "type": "integer",
+                        "description": (
+                            "Refuse the edit unless the old text occurs "
+                            "exactly this many times."
+                        ),
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Replace at most this many occurrences.",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, change nothing and return a unified "
+                            "diff instead. Defaults to false."
+                        ),
+                    },
+                },
+                "required": ["path", "old", "new"],
+            },
+        ),
+        ToolSpec(
+            name="replace_file_lines",
+            description=(
+                "Replace a 1-indexed, inclusive line range of a file on the "
+                "user's machine in ONE call, with the new content "
+                "base64-encoded for you. Use it when the old text is awkward "
+                "to reproduce exactly; otherwise prefer replace_in_file, "
+                "which cannot silently hit the wrong lines if the file has "
+                "shifted since you read it."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File to edit, on the terminal's machine.",
+                    },
+                    "start": {
+                        "type": "integer",
+                        "description": "First line to replace (1-indexed, inclusive).",
+                    },
+                    "end": {
+                        "type": "integer",
+                        "description": "Last line to replace (1-indexed, inclusive).",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "The text to put in place of those lines. Do not "
+                            "base64-encode it yourself."
+                        ),
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, change nothing and return a unified "
+                            "diff instead. Defaults to false."
+                        ),
+                    },
+                },
+                "required": ["path", "start", "end", "content"],
+            },
+        ),
+        ToolSpec(
+            name="apply_file_edits",
+            description=(
+                "Apply several exact literal edits to one file on the user's "
+                "machine in a single call, writing only if ALL of them apply "
+                "-- the all-or-nothing alternative to a run of "
+                "replace_in_file calls, and one round trip instead of many. "
+                "Each edit is base64-encoded and packed into the helper's "
+                "structured patch for you. Every edit requires exactly one "
+                "occurrence of its old text unless you say otherwise; if any "
+                "edit fails, nothing is written and the result names the "
+                "failing edit by its 1-based index."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File to edit, on the terminal's machine.",
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "The edits to apply, in order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old": {
+                                    "type": "string",
+                                    "description": "Exact literal text to find.",
+                                },
+                                "new": {
+                                    "type": "string",
+                                    "description": "Text to put in its place.",
+                                },
+                                "expect_count": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Require exactly this many "
+                                        "occurrences. Defaults to 1."
+                                    ),
+                                },
+                                "count": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Replace at most this many occurrences."
+                                    ),
+                                },
+                            },
+                            "required": ["old", "new"],
+                        },
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, change nothing and return a unified "
+                            "diff instead. Defaults to false."
+                        ),
+                    },
+                },
+                "required": ["path", "edits"],
+            },
+        ),
+        ToolSpec(
             name="capture_screen_history",
             description=(
                 "Read lines from the terminal's scrollback history -- output "
@@ -234,10 +479,13 @@ def builtin_tool_specs() -> list[ToolSpec]:
             name="b64_encode",
             description=(
                 "Encode UTF-8 text to base64 natively (no shell, no "
-                "terminal round-trip). Use this to build the base64 "
-                "payloads that ludvart_helper subcommands expect (e.g. "
-                "--b64 / --old-b64 / --new-b64), avoiding fragile "
-                "'printf | base64' shell quoting. Returns the base64 string."
+                "terminal round-trip). Use it for the helper payloads the "
+                "dedicated tools do not build for you -- driving a subcommand "
+                "by hand -- rather than for a write or an edit, which "
+                "write_file, append_to_file, replace_in_file, "
+                "replace_file_lines and apply_file_edits already encode. "
+                "Avoids fragile 'printf | base64' shell quoting. Returns the "
+                "base64 string."
             ),
             input_schema={
                 "type": "object",
@@ -404,6 +652,94 @@ def helper_run_line(command: str) -> str:
     """
     blob = base64.b64encode(command.encode("utf-8")).decode("ascii")
     return f"{HELPER_PATH} run --b64 {blob}"
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _need_str(args: dict, key: str) -> str:
+    val = args.get(key)
+    if not isinstance(val, str):
+        raise ValueError(f"'{key}' must be a string")
+    return val
+
+
+def _need_int(args: dict, key: str) -> int:
+    """Coerce an integer argument, tolerating the digit strings models send."""
+    val = args.get(key)
+    if isinstance(val, int) and not isinstance(val, bool):
+        return val
+    if isinstance(val, str) and val.strip().lstrip("-").isdigit():
+        return int(val)
+    raise ValueError(f"'{key}' must be an integer")
+
+
+def _structured_patch_json(args: dict) -> str:
+    """Pack the ``apply_file_edits`` edit list into the helper's patch JSON."""
+    edits = args.get("edits")
+    if not isinstance(edits, list) or not edits:
+        raise ValueError("'edits' must be a non-empty list")
+    packed = []
+    for i, edit in enumerate(edits, 1):
+        if not isinstance(edit, dict):
+            raise ValueError(f"edit {i} must be an object")
+        try:
+            item: dict = {
+                "old_b64": _b64(_need_str(edit, "old")),
+                "new_b64": _b64(_need_str(edit, "new")),
+            }
+            if "expect_count" in edit:
+                expect = edit["expect_count"]
+                item["expect_count"] = (
+                    None if expect is None else _need_int(edit, "expect_count")
+                )
+            if edit.get("count") is not None:
+                item["count"] = _need_int(edit, "count")
+        except ValueError as exc:
+            raise ValueError(f"edit {i}: {exc}") from None
+        packed.append(item)
+    return json.dumps({"edits": packed}, separators=(",", ":"))
+
+
+def helper_edit_line(name: str, args: dict) -> str:
+    """Build the ``ludvart_helper`` line for one of the file-editing tools.
+
+    Raises :class:`ValueError` with a model-readable reason, so a malformed
+    call is handed back for correction instead of being typed at the terminal.
+    """
+    sub = HELPER_EDIT_SUBCOMMANDS[name]
+    path = _need_str(args, "path")
+    if not path.strip():
+        raise ValueError("'path' must not be empty")
+    parts = [HELPER_PATH, sub, shlex.quote(path)]
+    if sub in ("write", "append"):
+        parts += ["--b64", _b64(_need_str(args, "content"))]
+    elif sub == "replace":
+        parts += ["--old-b64", _b64(_need_str(args, "old"))]
+        parts += ["--new-b64", _b64(_need_str(args, "new"))]
+        if args.get("expect_count") is not None:
+            parts += ["--expect-count", str(_need_int(args, "expect_count"))]
+        if args.get("count") is not None:
+            parts += ["--count", str(_need_int(args, "count"))]
+    elif sub == "replace-range":
+        parts += ["--start", str(_need_int(args, "start"))]
+        parts += ["--end", str(_need_int(args, "end"))]
+        parts += ["--b64", _b64(_need_str(args, "content"))]
+    else:
+        parts += ["--b64", _b64(_structured_patch_json(args))]
+    if args.get("dry_run") and name in HELPER_DRY_RUN_TOOLS:
+        parts.append("--dry-run")
+    line = " ".join(parts)
+    if len(line) > HELPER_MAX_LINE:
+        raise ValueError(
+            f"the command line would be {len(line)} bytes, past the "
+            f"~{HELPER_MAX_LINE} the terminal channel carries; send less per "
+            "call -- write_file the first chunk and append_to_file the rest, "
+            "or change part of the file with replace_in_file / "
+            "replace_file_lines instead of rewriting all of it"
+        )
+    return line
 
 
 def b64_decode(args: dict) -> str:

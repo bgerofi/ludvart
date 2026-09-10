@@ -161,6 +161,7 @@ def main():
     test_helper_run_preview_decodes_command()
     test_helper_run_preview_keeps_invalid_payload()
     test_run_command_tool_line_is_previewed_decoded()
+    test_file_edit_tool_line_is_previewed_decoded()
     test_revoke_approval_reprompts_future_injections()
     test_revoke_approval_without_grant_is_noop_message()
     test_revoke_approval_is_completable()
@@ -199,6 +200,24 @@ def test_run_command_tool_line_is_previewed_decoded():
 
     assert f'"{command}"' in prompt, prompt
     print("run_command tool line is previewed decoded: OK")
+
+
+def test_file_edit_tool_line_is_previewed_decoded():
+    """An approval gate showing only a base64 blob would be worthless."""
+    from ludvart.tools import helper_edit_line
+
+    runner, _writes = _make_ludvart()
+    line = helper_edit_line(
+        "replace_in_file",
+        {"path": "app.py", "old": "DEBUG", "new": "PRODUCTION"},
+    )
+
+    prompt = runner._inject_approval_prompt(line)
+
+    assert "app.py" in prompt, prompt
+    assert "DEBUG" in prompt and "PRODUCTION" in prompt, prompt
+    assert "b64" not in prompt, prompt
+    print("file edit tool line is previewed decoded: OK")
 
 
 if __name__ == "__main__":

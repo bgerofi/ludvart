@@ -626,6 +626,143 @@ def test_run_command_rejects_an_empty_command():
     print("run_command rejects an empty command: OK")
 
 
+def _edit_line(name, args):
+    """Run a file-editing tool and return the helper line it typed."""
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+    out = core._run_tool(ToolCall(id="c1", name=name, input=args))
+    if not host.tool_calls:
+        return out
+    injected, injected_args = host.tool_calls[0]
+    assert injected == "inject_input", injected
+    assert injected_args["submit"] is True
+    assert injected_args["interpret_escapes"] is False
+    return injected_args["text"]
+
+
+def test_write_file_encodes_the_content_and_quotes_the_path():
+    import base64
+
+    line = _edit_line(
+        "write_file", {"path": "a b/notes.txt", "content": "hello\nthere\n"}
+    )
+
+    head, _, blob = line.rpartition(" ")
+    assert head == "~/.ludvart/bin/ludvart_helper write 'a b/notes.txt' --b64", head
+    assert base64.b64decode(blob, validate=True).decode() == "hello\nthere\n"
+    print("write_file encodes the content and quotes the path: OK")
+
+
+def test_replace_in_file_passes_both_payloads_and_the_guard():
+    import base64
+
+    line = _edit_line(
+        "replace_in_file",
+        {"path": "app.py", "old": "OLD", "new": "NEW", "expect_count": 1},
+    )
+
+    parts = line.split()
+    assert parts[1:3] == ["replace", "app.py"], parts
+    assert base64.b64decode(parts[4], validate=True).decode() == "OLD"
+    assert base64.b64decode(parts[6], validate=True).decode() == "NEW"
+    assert parts[3] == "--old-b64" and parts[5] == "--new-b64", parts
+    assert parts[7:] == ["--expect-count", "1"], parts
+    print("replace_in_file passes both payloads and the guard: OK")
+
+
+def test_replace_file_lines_accepts_numbers_sent_as_strings():
+    """Models routinely send integers as strings; that must not be an error."""
+    line = _edit_line(
+        "replace_file_lines",
+        {"path": "app.py", "start": "10", "end": 12, "content": "x\n"},
+    )
+
+    parts = line.split()
+    assert parts[1:7] == [
+        "replace-range",
+        "app.py",
+        "--start",
+        "10",
+        "--end",
+        "12",
+    ], parts
+    print("replace_file_lines accepts numbers sent as strings: OK")
+
+
+def test_apply_file_edits_packs_the_structured_patch():
+    import base64, json
+
+    line = _edit_line(
+        "apply_file_edits",
+        {
+            "path": "app.py",
+            "edits": [
+                {"old": "A", "new": "B"},
+                {"old": "C", "new": "D", "expect_count": 2},
+            ],
+            "dry_run": True,
+        },
+    )
+
+    parts = line.split()
+    assert parts[1:4] == ["structured-patch", "app.py", "--b64"], parts
+    assert parts[5] == "--dry-run", parts
+    payload = json.loads(base64.b64decode(parts[4], validate=True).decode())
+    assert [
+        (base64.b64decode(e["old_b64"]).decode(), base64.b64decode(e["new_b64"]).decode())
+        for e in payload["edits"]
+    ] == [("A", "B"), ("C", "D")], payload
+    assert "expect_count" not in payload["edits"][0], payload
+    assert payload["edits"][1]["expect_count"] == 2, payload
+    print("apply_file_edits packs the structured patch: OK")
+
+
+def test_append_to_file_has_no_dry_run():
+    """The helper's append takes no --dry-run, so it must not be passed one."""
+    line = _edit_line(
+        "append_to_file", {"path": "a.txt", "content": "x", "dry_run": True}
+    )
+
+    assert "--dry-run" not in line, line
+    print("append_to_file has no dry run: OK")
+
+
+def test_oversized_edit_is_refused_before_it_is_typed():
+    """A truncated command line would run as something other than intended."""
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    out = core._run_tool(
+        ToolCall(
+            id="c1",
+            name="write_file",
+            input={"path": "big.txt", "content": "x" * 4000},
+        )
+    )
+
+    assert "past the ~2000" in out, out
+    assert "append_to_file" in out, out
+    assert host.tool_calls == [], host.tool_calls
+    print("oversized edit is refused before it is typed: OK")
+
+
+def test_malformed_edit_is_reported_not_typed():
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    out = core._run_tool(
+        ToolCall(
+            id="c1",
+            name="apply_file_edits",
+            input={"path": "a.py", "edits": [{"old": "A"}]},
+        )
+    )
+
+    assert "edit 1: 'new' must be a string" in out, out
+    assert host.tool_calls == [], host.tool_calls
+    print("malformed edit is reported not typed: OK")
+
+
 def test_failed_turn_is_rolled_back_out_of_the_history():
     """A turn that dies between a tool call and its result must leave no trace.
 
@@ -840,6 +977,13 @@ def main():
     test_last_turn_compaction_uses_a_focused_instruction()
     test_run_command_injects_one_encoded_helper_line()
     test_run_command_rejects_an_empty_command()
+    test_write_file_encodes_the_content_and_quotes_the_path()
+    test_replace_in_file_passes_both_payloads_and_the_guard()
+    test_replace_file_lines_accepts_numbers_sent_as_strings()
+    test_apply_file_edits_packs_the_structured_patch()
+    test_append_to_file_has_no_dry_run()
+    test_oversized_edit_is_refused_before_it_is_typed()
+    test_malformed_edit_is_reported_not_typed()
     test_failed_turn_is_rolled_back_out_of_the_history()
     test_a_cancel_interrupts_the_stream_and_keeps_the_partial_answer()
     test_a_cancel_between_steps_stops_the_next_request()
