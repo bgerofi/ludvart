@@ -558,7 +558,7 @@ class AgentCore:
             return self._tool_get_past_snapshot(call.input)
         if call.name == "b64_encode":
             return builtin.b64_encode(call.input)
-        if call.name == "b64_encode_and_run_command":
+        if call.name == "run_shell_command":
             return self._tool_run_command(call.input)
         if call.name == "b64_decode":
             return builtin.b64_decode(call.input)
@@ -584,7 +584,7 @@ class AgentCore:
         command = args.get("command")
         if not isinstance(command, str) or not command.strip():
             return (
-                "[ludvart] b64_encode_and_run_command: 'command' must be a "
+                "[ludvart] run_shell_command: 'command' must be a "
                 "non-empty string."
             )
         return self.host.run_terminal_tool(

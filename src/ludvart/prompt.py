@@ -47,9 +47,12 @@ hand-write the helper yourself.
 
 ### Usage conventions
   - Once you have confirmed the helper is installed, run a non-interactive
-    command with the single 'b64_encode_and_run_command' tool: it encodes the
-    command and injects the helper's 'run' line in one call, so pairing
-    'b64_encode' with 'inject_input' is not needed for this.
+    command with the single 'run_shell_command' tool: it encodes the command
+    and injects the helper's 'run' line in one call, so pairing 'b64_encode'
+    with 'inject_input' is not needed for this. It types a command line, so it
+    only works at a shell prompt: while vim, less, a pager or a REPL owns the
+    screen, that text is just keystrokes. Check the screen first and use
+    inject_input for interactive work.
   - Build the base64 arguments of the *other* subcommands (--b64 / --old-b64 /
     --new-b64) with the native 'b64_encode' tool and read the result frames
     with 'b64_decode', rather than piping through 'printf | base64' /

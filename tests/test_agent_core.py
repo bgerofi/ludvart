@@ -594,7 +594,7 @@ def test_run_command_injects_one_encoded_helper_line():
     out = core._run_tool(
         ToolCall(
             id="c1",
-            name="b64_encode_and_run_command",
+            name="run_shell_command",
             input={"command": command},
         )
     )
@@ -618,7 +618,7 @@ def test_run_command_rejects_an_empty_command():
     core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
 
     out = core._run_tool(
-        ToolCall(id="c1", name="b64_encode_and_run_command", input={"command": "  "})
+        ToolCall(id="c1", name="run_shell_command", input={"command": "  "})
     )
 
     assert "must be a non-empty string" in out, out

@@ -189,7 +189,7 @@ def test_helper_run_preview_keeps_invalid_payload():
 
 
 def test_run_command_tool_line_is_previewed_decoded():
-    """b64_encode_and_run_command must not hide the command behind base64."""
+    """run_shell_command must not hide the command behind base64."""
     from ludvart.tools import helper_run_line
 
     runner, _writes = _make_ludvart()

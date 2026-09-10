@@ -64,10 +64,10 @@ def builtin_tool_specs() -> list[ToolSpec]:
                 "newline -- on the final one to execute). To put a large file "
                 "on the machine, do not split a command line at all: use "
                 "ludvart_helper write for the first chunk and append for each "
-                "of the rest. For a non-interactive shell command, prefer "
-                "b64_encode_and_run_command, which does the encoding and the "
-                "injection in a single call and reports the command's real "
-                "exit status."
+                "of the rest. For a non-interactive shell command typed at a "
+                "shell prompt, prefer run_shell_command, which does the "
+                "encoding and the injection in a single call and reports the "
+                "command's real exit status."
             ),
             input_schema={
                 "type": "object",
@@ -114,25 +114,33 @@ def builtin_tool_specs() -> list[ToolSpec]:
             },
         ),
         ToolSpec(
-            name="b64_encode_and_run_command",
+            name="run_shell_command",
             description=(
                 "Run a non-interactive shell command on the user's machine in "
                 "ONE call. The command is base64-encoded here and injected as "
                 "a single '" + HELPER_PATH + " run --b64 ...' line, so you do "
                 "NOT need a separate b64_encode call and there is no shell "
-                "quoting to get wrong. This needs ludvart_helper to be "
-                "installed; once you have confirmed that (e.g. with '"
+                "quoting to get wrong. TWO PRECONDITIONS, both on you to "
+                "check: ludvart_helper must be installed (confirm once with '"
                 + HELPER_PATH
-                + " info'), prefer this over pairing b64_encode "
-                "with inject_input for every non-interactive command. Pass the "
-                "command exactly as you would type it at a shell prompt -- "
-                "pipes, redirections, quotes, '&&' and environment prefixes "
-                "all work, since it is run through the shell. Its stdout and "
-                "stderr go to the terminal, and the result carries the screen "
-                "plus the helper's END sentinel, whose exit= is the command's "
-                "real status: read it before judging whether the command "
-                "worked. Use inject_input instead for interactive programs "
-                "(vim, less, a REPL) and for sending keystrokes."
+                + " info'), and the terminal must be sitting at a SHELL "
+                "PROMPT. This types a command line, so it does nothing useful "
+                "while the screen is held by a full-screen or interactive "
+                "program -- vim, less, top, a pager, an ssh session into "
+                "another host, or a Python/Node REPL will simply swallow the "
+                "text as keystrokes. Look at the current screen first; if a "
+                "program owns it, either leave it via inject_input or use "
+                "inject_input for the whole job. When those hold, prefer this "
+                "over pairing b64_encode with inject_input for every "
+                "non-interactive command. Pass the command exactly as you "
+                "would type it at a shell prompt -- pipes, redirections, "
+                "quotes, '&&' and environment prefixes all work, since it is "
+                "run through the shell. Its stdout and stderr go to the "
+                "terminal, and the result carries the screen plus the "
+                "helper's END sentinel, whose exit= is the command's real "
+                "status: read it before judging whether the command worked. "
+                "Use inject_input instead for interactive programs and for "
+                "sending keystrokes."
             ),
             input_schema={
                 "type": "object",
