@@ -246,6 +246,71 @@ def test_openai_stream_tool_call_and_text():
     print("openai stream tool call + text: OK")
 
 
+def test_openai_stream_reports_the_tool_before_its_arguments():
+    """A tool-only turn is silent for as long as its arguments take to arrive.
+
+    Nothing reaches ``on_text``, so the name -- which lands in the very first
+    delta -- is the only progress there is to show.
+    """
+    log = []
+
+    def handler(kw):
+        def chunks():
+            yield _ns(
+                choices=[
+                    _ns(
+                        delta=_ns(
+                            content=None,
+                            tool_calls=[
+                                _ns(
+                                    index=0,
+                                    id="call_1",
+                                    function=_ns(name="write_file", arguments=""),
+                                )
+                            ],
+                        )
+                    )
+                ],
+                usage=None,
+            )
+            for piece in ('{"path":"a.txt"', ',"text":"body"', "}"):
+                log.append("args")
+                yield _ns(
+                    choices=[
+                        _ns(
+                            delta=_ns(
+                                content=None,
+                                tool_calls=[
+                                    _ns(
+                                        index=0,
+                                        id=None,
+                                        function=_ns(name=None, arguments=piece),
+                                    )
+                                ],
+                            )
+                        )
+                    ],
+                    usage=None,
+                )
+
+        return chunks()
+
+    client = _openai_client(handler)
+    seen = []
+    turn = client.converse(
+        [{"role": "user", "content": "write it"}],
+        tools=[_WEATHER],
+        on_text=seen.append,
+        on_tool=lambda name: log.append(f"tool:{name}"),
+    )
+
+    # Reported once, up front -- not after the arguments finished arriving.
+    assert log == ["tool:write_file", "args", "args", "args"], log
+    assert seen == [], seen
+    assert turn.tool_calls[0].input == {"path": "a.txt", "text": "body"}
+    print("openai stream reports the tool before its arguments: OK")
+
+
 def test_openai_stream_reasoning_narrated_not_in_answer():
     def handler(kw):
         if not kw.get("stream"):
@@ -454,6 +519,7 @@ def main():
     test_openai_falls_back_to_max_completion_tokens_and_remembers_it()
     test_openai_disables_reasoning_when_chat_tools_require_it()
     test_openai_stream_tool_call_and_text()
+    test_openai_stream_reports_the_tool_before_its_arguments()
     test_openai_stream_reasoning_narrated_not_in_answer()
     test_google_nonstream_tool_call()
     test_google_tool_result_roundtrips_to_content()

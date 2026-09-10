@@ -197,6 +197,11 @@ class AgentCore:
             last_stream = text
             self.host.narrate(compose(text))
 
+        def on_tool(name: str) -> None:
+            # A turn that goes straight to a tool streams no text, and writing a
+            # large argument (a file body, a base64 payload) can take a minute.
+            self.host.set_activity(f"Preparing {name}")
+
         while True:
             # Compact before EVERY request, not just once per user turn: one
             # agentic turn can issue many tool round-trips and each re-sends the
@@ -220,6 +225,7 @@ class AgentCore:
                     tools=self.tools or None,
                     max_tokens=self.max_tokens,
                     on_text=on_text,
+                    on_tool=on_tool,
                 )
                 interrupted_while_streaming = False
                 self.history.append(neutral_assistant(turn))

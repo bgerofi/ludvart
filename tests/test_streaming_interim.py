@@ -57,11 +57,25 @@ def test_base_converse_calls_on_text():
 
 
 class _FakeStream:
-    """Mimics the anthropic SDK streaming context manager."""
+    """Mimics the anthropic SDK streaming context manager.
 
-    def __init__(self, deltas, final):
-        self.text_stream = deltas
+    Iterating the SDK's stream yields the raw ``content_block_start`` events
+    interleaved with the synthetic ``text`` ones, which is what the client reads.
+    """
+
+    def __init__(self, deltas, final, tools=()):
+        self._deltas = deltas
+        self._tools = tools
         self._final = final
+
+    def __iter__(self):
+        for name in self._tools:
+            yield SimpleNamespace(
+                type="content_block_start",
+                content_block=SimpleNamespace(type="tool_use", name=name),
+            )
+        for delta in self._deltas:
+            yield SimpleNamespace(type="text", text=delta)
 
     def __enter__(self):
         return self
@@ -111,6 +125,35 @@ def test_anthropic_converse_streams_and_assembles():
     # The tools were forwarded to the streaming request.
     assert "tools" in captured["kwargs"], captured["kwargs"]
     print("anthropic converse streams and assembles: OK")
+
+
+def test_anthropic_stream_reports_the_tool_as_it_starts():
+    """The tool_use block opens before its input has been written."""
+    tool_block = SimpleNamespace(type="tool_use", id="t1", name="write_file", input={})
+    final = SimpleNamespace(
+        content=[tool_block],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=1),
+    )
+
+    def _stream(**kwargs):
+        return _FakeStream([], final, tools=["write_file"])
+
+    client = AnthropicClient(
+        ProviderConfig(name="anthropic", api_url="http://x", api_key="k", model="m")
+    )
+    client._client = SimpleNamespace(messages=SimpleNamespace(stream=_stream))
+
+    seen, tools = [], []
+    client.converse(
+        [{"role": "user", "content": "hi"}],
+        tools=[ToolSpec(name="write_file", description="d", input_schema={})],
+        on_text=seen.append,
+        on_tool=tools.append,
+    )
+
+    assert tools == ["write_file"], tools
+    assert seen == [], seen  # a tool-only turn narrates nothing
+    print("anthropic stream reports the tool as it starts: OK")
 
 
 def test_anthropic_stream_assembly_error_becomes_llm_error():
@@ -422,7 +465,8 @@ class _StreamingLLM:
         self.turn = 0
         self.interim_at_entry = []
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         self.turn += 1
         # Record the interim value the harness left when this turn begins; the
         # agent loop must reset it to "" before every turn.
@@ -509,6 +553,7 @@ def main():
 
     test_base_converse_calls_on_text()
     test_anthropic_converse_streams_and_assembles()
+    test_anthropic_stream_reports_the_tool_as_it_starts()
     test_anthropic_stream_assembly_error_becomes_llm_error()
     test_anthropic_stream_assembly_retries_before_visible_output()
     test_anthropic_stream_assembly_not_retried_after_visible_output()

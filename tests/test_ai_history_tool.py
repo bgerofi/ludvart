@@ -5,6 +5,7 @@ import pyte
 from e2e_util import (
     Approver,
     Checks,
+    agent_idle,
     ludvart_argv,
     screen_text,
     wait_for,
@@ -63,7 +64,7 @@ def main():
     done = wait_for(
         m,
         stream.feed,
-        lambda: "Thinking" not in screen_text(screen) and "Calling" not in screen_text(screen),
+        lambda: agent_idle(screen),
         120,
         approver=approver,
         settle=1.0,

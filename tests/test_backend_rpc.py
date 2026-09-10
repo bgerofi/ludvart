@@ -149,7 +149,8 @@ def test_loopback_plain_turn_without_tools():
     client_ch, backend_ch = _pipe_pair()
 
     class NoToolLLM(_FakeBackendLLM):
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             if on_text:
                 on_text("hi")
             from ludvart.llm import Turn
@@ -436,7 +437,8 @@ def test_context_pct_flows_from_backend_to_client_panel():
     from ludvart.llm import Turn, Usage
 
     class UsageLLM(_FakeBackendLLM):
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             return Turn(
                 text="answered",
                 assistant_message={"role": "assistant", "content": "answered"},
@@ -472,7 +474,8 @@ def test_compact_last_turn_compacts_the_backend_conversation():
             super().__init__()
             self.summary_instruction = ""
 
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             self.summary_instruction = messages[-1]["content"]
             return Turn(
                 text="BRIEF",

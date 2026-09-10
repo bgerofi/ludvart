@@ -40,7 +40,8 @@ class _TextLLM(LLMClient):
     def __init__(self):
         super().__init__(ProviderConfig("custom", "x", "k", "m"))
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         if on_text:
             on_text("thinking")
         return Turn(

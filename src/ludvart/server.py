@@ -73,7 +73,8 @@ class _FakeBackendLLM(LLMClient):
             ProviderConfig(name="custom", api_url="x", api_key="k", model="fake")
         )
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         has_tool_result = any(
             isinstance(m, dict) and m.get("role") == "tool" for m in messages
         )
@@ -85,6 +86,8 @@ class _FakeBackendLLM(LLMClient):
                 name="inject_input",
                 input={"text": "echo hi", "submit": True},
             )
+            if on_tool:
+                on_tool(call.name)
             return Turn(
                 text="working on it",
                 tool_calls=[call],

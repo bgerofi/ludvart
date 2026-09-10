@@ -167,7 +167,7 @@ def test_request_non_retryable_raises_immediately():
 
 def test_stream_does_not_retry_after_visible_output():
     class _StreamingClient(LLMClient):
-        def _stream_turn(self, request, on_text):
+        def _stream_turn(self, request, on_text, on_tool=None):
             self.calls += 1
             on_text("partial")
             raise _FakeTimeout("stream dropped")
@@ -189,7 +189,7 @@ def test_stream_does_not_retry_after_visible_output():
 
 def test_stream_retries_before_visible_output(monkeypatch):
     class _StreamingClient(LLMClient):
-        def _stream_turn(self, request, on_text):
+        def _stream_turn(self, request, on_text, on_tool=None):
             self.calls += 1
             if self.calls == 1:
                 raise _FakeTimeout("stream failed before output")
@@ -404,7 +404,7 @@ def test_a_stalled_stream_is_retried_rather_than_reported(monkeypatch):
     import httpx
 
     class _StreamingClient(LLMClient):
-        def _stream_turn(self, request, on_text):
+        def _stream_turn(self, request, on_text, on_tool=None):
             self.calls += 1
             if self.calls == 1:
                 raise httpx.ReadTimeout("timed out")

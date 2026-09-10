@@ -968,6 +968,7 @@ class LLMClient:
         tools: Sequence[ToolSpec] | None = None,
         max_tokens: int = 1024,
         on_text: Callable[[str], None] | None = None,
+        on_tool: Callable[[str], None] | None = None,
     ) -> Turn:
         """One round-trip that may request tool calls.
 
@@ -981,6 +982,11 @@ class LLMClient:
 
         ``on_text``, when given, is fed the assistant's answer text as it is
         produced (each call carries the full accumulated text so far).
+
+        ``on_tool`` is fed the name of each tool call as soon as the model
+        starts one. A turn that goes straight to a tool streams no text at all,
+        and its arguments can take tens of seconds to arrive, so this is the
+        only progress the UI has to show in that window.
         """
         request = self._prepare_converse(messages, tools, max_tokens)
         if on_text is not None:
@@ -993,7 +999,7 @@ class LLMClient:
                 on_text(text)
 
             turn = self._request(
-                lambda: self._stream_turn(request, emit_text),
+                lambda: self._stream_turn(request, emit_text, on_tool),
                 can_retry=lambda: not visible_output,
             )
         else:
@@ -1080,7 +1086,10 @@ class LLMClient:
         )
 
     def _stream_turn(
-        self, request: Any, on_text: Callable[[str], None]
+        self,
+        request: Any,
+        on_text: Callable[[str], None],
+        on_tool: Callable[[str], None] | None = None,
     ) -> Turn:
         """Run one streamed request, feeding accumulated text to ``on_text``.
 
@@ -1270,7 +1279,10 @@ class OpenAIClient(LLMClient):
         )
 
     def _stream_turn(
-        self, request: Any, on_text: Callable[[str], None]
+        self,
+        request: Any,
+        on_text: Callable[[str], None],
+        on_tool: Callable[[str], None] | None = None,
     ) -> Turn:
         stream_req = dict(request)
         stream_req["stream"] = True
@@ -1318,6 +1330,8 @@ class OpenAIClient(LLMClient):
                     name = getattr(fn, "name", None)
                     if name:
                         slot["name"] = name
+                        if on_tool is not None:
+                            on_tool(name)
                     args = getattr(fn, "arguments", None)
                     if args:
                         slot["arguments"] += args
@@ -1473,7 +1487,10 @@ class ResponsesClient(OpenAIClient):
         return self._responses_turn(self._client.responses.create(**request))
 
     def _stream_turn(
-        self, request: Any, on_text: Callable[[str], None]
+        self,
+        request: Any,
+        on_text: Callable[[str], None],
+        on_tool: Callable[[str], None] | None = None,
     ) -> Turn:
         stream_request = dict(request)
         stream_request["stream"] = True
@@ -1498,6 +1515,16 @@ class ResponsesClient(OpenAIClient):
                 if delta:
                     text_parts.append(delta)
                     on_text("".join(text_parts))
+            elif event_type == "response.output_item.added":
+                # The arguments of this call stream for as long as it takes the
+                # model to write them, and nothing else does.
+                item = self._event_value(event, "item")
+                if on_tool is not None and self._event_value(item, "type") == (
+                    "function_call"
+                ):
+                    name = self._event_value(item, "name")
+                    if name:
+                        on_tool(name)
             elif event_type == "response.output_item.done":
                 item = self._event_value(event, "item")
                 call = self._function_call_from_item(item, len(calls))
@@ -1781,7 +1808,10 @@ class AnthropicClient(LLMClient):
         return self._turn_from_message(resp)
 
     def _stream_turn(
-        self, request: Any, on_text: Callable[[str], None]
+        self,
+        request: Any,
+        on_text: Callable[[str], None],
+        on_tool: Callable[[str], None] | None = None,
     ) -> Turn:
         # Emit the assistant's text deltas as they arrive so the UI can show the
         # model's narration live, then assemble the final message (which also
@@ -1789,9 +1819,15 @@ class AnthropicClient(LLMClient):
         acc: list[str] = []
         try:
             with self._client.messages.stream(**request) as stream:
-                for delta in stream.text_stream:
-                    acc.append(delta)
-                    on_text("".join(acc))
+                for event in stream:
+                    if event.type == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        name = getattr(block, "name", None)
+                        if on_tool is not None and name:
+                            on_tool(name)
+                    elif event.type == "text":
+                        acc.append(event.text)
+                        on_text("".join(acc))
                 resp = stream.get_final_message()
         except (IndexError, KeyError) as exc:
             # The Anthropic SDK assembles the streamed SSE events (by content
@@ -2079,7 +2115,10 @@ class GoogleClient(LLMClient):
         )
 
     def _stream_turn(
-        self, request: Any, on_text: Callable[[str], None]
+        self,
+        request: Any,
+        on_text: Callable[[str], None],
+        on_tool: Callable[[str], None] | None = None,
     ) -> Turn:
         text_parts: list[str] = []
         reasoning: list[str] = []
@@ -2097,6 +2136,8 @@ class GoogleClient(LLMClient):
                 fc = getattr(part, "function_call", None)
                 if fc is not None:
                     fcalls.append(fc)
+                    if on_tool is not None and getattr(fc, "name", None):
+                        on_tool(fc.name)
                     continue
                 ptext = getattr(part, "text", None)
                 if not ptext:

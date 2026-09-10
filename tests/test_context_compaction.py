@@ -102,7 +102,8 @@ class FakeLLM:
         self.on_retry = None
         self.calls = []
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         self.calls.append(list(messages))
         last = messages[-1]["content"] if messages else ""
         if isinstance(last, str) and "Summarize the ENTIRE" in last:

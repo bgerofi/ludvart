@@ -65,7 +65,8 @@ class ScriptedLLM(LLMClient):
         self.seen_messages = []
         self.calls = 0
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         self.seen_messages.append(list(messages))
         self.calls += 1
         if on_text:
@@ -136,6 +137,35 @@ def test_client_tool_routes_through_host():
     # Activity reflected the tool call.
     assert "Calling inject_input" in host.activities
     print("client tool routes through the host and threads results: OK")
+
+
+def test_the_tool_being_written_is_shown_while_its_arguments_stream():
+    """Writing a big argument can take a minute, and it narrates nothing.
+
+    Without this the panel sits on "Thinking" for the whole of it.
+    """
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="write_file", input={"path": "a", "text": "b"})
+
+    class _WritesSlowly(ScriptedLLM):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
+            if on_tool:
+                on_tool("write_file")
+            return super().converse(messages, tools, max_tokens, on_text)
+
+    llm = _WritesSlowly([_tool_turn("", call), _text_turn("written")])
+    core = AgentCore(llm, host, system_prompt="SYS", tools=[_tool("write_file")])
+
+    core.run_turn("write it", "SCREEN")
+
+    # Announced while the arguments were still arriving, i.e. before the
+    # "Calling" label the tool gets once it actually runs.
+    assert "Preparing write_file" in host.activities, host.activities
+    assert host.activities.index("Preparing write_file") < host.activities.index(
+        "Calling write_file"
+    ), host.activities
+    print("the tool being written is shown while its arguments stream: OK")
 
 
 def test_backend_tool_runs_in_process():
@@ -1021,7 +1051,8 @@ def test_a_cancel_interrupts_the_stream_and_keeps_the_partial_answer():
     core = AgentCore(None, host, system_prompt="SYS")
 
     class _CancelMidStream(ScriptedLLM):
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             self.calls += 1
             on_text("partial ans")
             core.cancel.set()
@@ -1053,7 +1084,8 @@ def test_a_cancel_between_steps_stops_the_next_request():
     core = AgentCore(None, host, system_prompt="SYS", tools=[_tool("inject_input")])
 
     class _SilentLLM(ScriptedLLM):
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             self.calls += 1  # a provider that narrates nothing
             return self._turns.pop(0)
 
@@ -1087,7 +1119,8 @@ def test_a_cancel_survives_the_providers_retry_wrapper():
     core = AgentCore(None, host, system_prompt="SYS")
 
     class _WrappingLLM(ScriptedLLM):
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             self.calls += 1
             try:
                 core.cancel.set()
@@ -1110,7 +1143,8 @@ def test_a_cancel_stops_before_the_next_tool_runs():
     core = AgentCore(None, host, system_prompt="SYS", tools=[_tool("inject_input")])
 
     class _CancelAfterStream(ScriptedLLM):
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             turn = super().converse(messages, tools, max_tokens, on_text)
             core.cancel.set()
             return turn
@@ -1175,6 +1209,7 @@ def test_a_dangling_tool_call_is_never_sent():
 def main():
     test_plain_answer_turn()
     test_client_tool_routes_through_host()
+    test_the_tool_being_written_is_shown_while_its_arguments_stream()
     test_backend_tool_runs_in_process()
     test_unknown_backend_tool_reports_gracefully()
     test_transcript_accumulates_for_persistence()

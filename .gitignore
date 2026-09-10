@@ -15,3 +15,6 @@ dist/
 # Local config / secrets
 .env
 *.ludvart.bak
+
+# Scratch probes and captures, kept inside the workspace
+/tmp/

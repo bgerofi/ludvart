@@ -212,6 +212,17 @@ def screen_text(screen) -> str:
     return "\n".join(screen.display)
 
 
+#: Every spinner label the panel shows while a turn is still running. Kept in
+#: one place: a test that misses one reads the reply before it is on screen.
+BUSY_LABELS = ("Thinking", "Calling", "Preparing")
+
+
+def agent_idle(screen) -> bool:
+    """True once no spinner label is on screen, i.e. the turn has finished."""
+    text = screen_text(screen)
+    return not any(label in text for label in BUSY_LABELS)
+
+
 #: Shown by ludvart's startup banner once the backend model is live. Waiting for
 #: this is what makes keystrokes land reliably: before it, ludvart is still
 #: verifying the model and the terminal echoes them instead.

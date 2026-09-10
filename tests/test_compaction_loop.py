@@ -82,7 +82,8 @@ class _ToolLoopLLM:
         self.summarize_calls = 0
         self.seen_messages = []
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         self.seen_messages.append(list(messages))
         last = messages[-1]["content"] if messages else ""
         if isinstance(last, str) and "Summarize the ENTIRE" in last:

@@ -240,7 +240,8 @@ class _ToolThenAnswerLLM:
         self.on_retry = None
         self.calls = 0
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         self.calls += 1
         if self.calls == 1:
             return Turn(

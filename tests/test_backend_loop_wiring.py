@@ -55,7 +55,8 @@ class ScriptedLLM:
         self.calls = 0
         self.summarize_calls = 0
 
-    def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+    def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                 on_tool=None):
         last = messages[-1].get("content") if messages else ""
         if isinstance(last, str) and "Summarize the ENTIRE" in last:
             self.summarize_calls += 1
@@ -147,7 +148,8 @@ def test_a_cancel_interrupts_the_turn_it_was_aimed_at(tmp_path: Path):
             super().__init__(pcts)
             self.slow_done = False
 
-        def converse(self, messages, tools=None, max_tokens=1024, on_text=None):
+        def converse(self, messages, tools=None, max_tokens=1024, on_text=None,
+                     on_tool=None):
             if not self.slow_done:
                 self.slow_done = True
                 started.set()
