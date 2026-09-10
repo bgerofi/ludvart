@@ -91,6 +91,11 @@ HELPER_CHUNK_CHARS = 512
 #: Where the base64 is assembled before it is decoded and verified.
 HELPER_STAGE_PATH = "~/.ludvart/bin/.ludvart_helper.b64"
 
+#: Prefixed to a command run through the helper so tools that would page their
+#: output write it to the terminal instead. The helper runs the command through
+#: /bin/sh, so this is safe even when the user's own shell is csh or fish.
+HELPER_NO_PAGER_PRELUDE = "export PAGER=cat GIT_PAGER=cat; "
+
 
 def helper_probe_command() -> str:
     """Build a short command that reports the installed helper's md5.

@@ -36,6 +36,7 @@ from .render import Compositor, render_row
 from .screen import LudvartScreen
 from .terminal_host import TerminalHost
 from .helper_src import (
+    HELPER_NO_PAGER_PRELUDE,
     LUDVART_HELPER_MD5,
     LUDVART_HELPER_SOURCE,
     LUDVART_HELPER_VERSION,
@@ -1261,9 +1262,14 @@ class Ludvart:
         )
         if helper_run:
             try:
-                return base64.b64decode(helper_run.group(1), validate=True).decode("utf-8")
+                clear = base64.b64decode(helper_run.group(1), validate=True).decode("utf-8")
             except (ValueError, UnicodeDecodeError):
                 pass
+            else:
+                # The prelude is ours, not the model's; show what was asked for.
+                if clear.startswith(HELPER_NO_PAGER_PRELUDE):
+                    clear = clear[len(HELPER_NO_PAGER_PRELUDE):]
+                return clear
         if "ludvart_helper" in text:
             return self._HELPER_B64_ARG_RE.sub(self._decode_b64_arg, text)
         return text

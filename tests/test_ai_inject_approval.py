@@ -198,7 +198,9 @@ def test_run_command_tool_line_is_previewed_decoded():
 
     prompt = runner._inject_approval_prompt(helper_run_line(command))
 
+    # The pager prelude is the harness's, so the gate shows only the command.
     assert f'"{command}"' in prompt, prompt
+    assert "PAGER" not in prompt, prompt
     print("run_command tool line is previewed decoded: OK")
 
 

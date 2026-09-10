@@ -609,8 +609,29 @@ def test_run_command_injects_one_encoded_helper_line():
 
     prefix, _, blob = args["text"].rpartition(" ")
     assert prefix == "~/.ludvart/bin/ludvart_helper run --b64", prefix
-    assert base64.b64decode(blob, validate=True).decode() == command
+    decoded = base64.b64decode(blob, validate=True).decode()
+    assert decoded == "export PAGER=cat GIT_PAGER=cat; " + command, decoded
     print("run_command injects one encoded helper line: OK")
+
+
+def test_run_command_can_leave_the_pager_alone():
+    """Paging is suppressed by default, but the model can ask for it back."""
+    import base64
+
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    core._run_tool(
+        ToolCall(
+            id="c1",
+            name="run_shell_command",
+            input={"command": "git log", "no_pager": False},
+        )
+    )
+
+    blob = host.tool_calls[0][1]["text"].rpartition(" ")[2]
+    assert base64.b64decode(blob, validate=True).decode() == "git log"
+    print("run_command can leave the pager alone: OK")
 
 
 def test_run_command_rejects_an_empty_command():
@@ -1060,6 +1081,7 @@ def main():
     test_compact_on_demand_ignores_the_threshold()
     test_last_turn_compaction_uses_a_focused_instruction()
     test_run_command_injects_one_encoded_helper_line()
+    test_run_command_can_leave_the_pager_alone()
     test_run_command_rejects_an_empty_command()
     test_write_file_encodes_the_content_and_quotes_the_path()
     test_replace_in_file_passes_both_payloads_and_the_guard()

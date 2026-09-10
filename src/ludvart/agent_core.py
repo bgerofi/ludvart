@@ -602,7 +602,12 @@ class AgentCore:
                 "[ludvart] run_shell_command: 'command' must be a "
                 "non-empty string."
             )
-        return self._inject_helper_line(builtin.helper_run_line(command))
+        no_pager = args.get("no_pager", True)
+        if isinstance(no_pager, str):  # models sometimes send "false"
+            no_pager = no_pager.strip().lower() not in ("false", "0", "no")
+        return self._inject_helper_line(
+            builtin.helper_run_line(command, no_pager=bool(no_pager))
+        )
 
     def _tool_helper_edit(self, name: str, args: dict) -> str:
         """Encode a file edit and inject it as one ``ludvart_helper`` line."""

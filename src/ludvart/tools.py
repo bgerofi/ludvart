@@ -21,6 +21,7 @@ import os
 import re
 import shlex
 
+from .helper_src import HELPER_NO_PAGER_PRELUDE
 from .llm import ToolSpec
 
 #: Tools that must run where the terminal is. Everything else in this module is
@@ -159,6 +160,12 @@ def builtin_tool_specs() -> list[ToolSpec]:
                 "terminal, and the result carries the screen plus the "
                 "helper's END sentinel, whose exit= is the command's real "
                 "status: read it before judging whether the command worked. "
+                "By default PAGER and GIT_PAGER are set to 'cat' for the "
+                "command, so git, man, systemctl and friends print instead of "
+                "opening a pager that would take over the screen; pass "
+                "no_pager=false when you deliberately want the user's normal "
+                "paging. Note this cannot help if the command IS a pager "
+                "('less foo'), which still seizes the terminal. "
                 "Use inject_input instead for interactive programs and for "
                 "sending keystrokes."
             ),
@@ -173,6 +180,15 @@ def builtin_tool_specs() -> list[ToolSpec]:
                             "Do not base64-encode it yourself and do not wrap "
                             "it in a ludvart_helper invocation -- both are done "
                             "for you."
+                        ),
+                    },
+                    "no_pager": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether to run the command with PAGER and "
+                            "GIT_PAGER set to 'cat'. Defaults to true. Set "
+                            "false to leave the user's paging configuration "
+                            "alone."
                         ),
                     },
                 },
@@ -647,12 +663,14 @@ def b64_encode(args: dict) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
-def helper_run_line(command: str) -> str:
+def helper_run_line(command: str, no_pager: bool = True) -> str:
     """The ``ludvart_helper run`` line that executes ``command`` on the terminal.
 
     Base64 keeps the command opaque to the shell that types it, so quoting,
     pipes and newlines survive injection untouched.
     """
+    if no_pager:
+        command = HELPER_NO_PAGER_PRELUDE + command
     blob = base64.b64encode(command.encode("utf-8")).decode("ascii")
     return f"{HELPER_PATH} run --b64 {blob}"
 
