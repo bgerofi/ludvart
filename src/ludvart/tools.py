@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shlex
 
 from .llm import ToolSpec
@@ -189,9 +190,9 @@ def builtin_tool_specs() -> list[ToolSpec]:
                 "screen, exactly like run_shell_command. Parent directories "
                 "are created, the previous contents are kept beside the file "
                 "as PATH.ludvart.bak, and a .py file is compile-checked after "
-                "writing. About 2 KB of content fits in a call: for more, "
-                "write the first chunk here and add the rest with "
-                "append_to_file."
+                "writing. Content longer than one ~2 KB call is split for you "
+                "into a write plus appends, so send the whole file in one "
+                "call rather than chunking it yourself."
             ),
             input_schema={
                 "type": "object",
@@ -223,11 +224,10 @@ def builtin_tool_specs() -> list[ToolSpec]:
             description=(
                 "Append text to a file on the user's machine (the terminal's, "
                 "not ludvart's host) in ONE call, base64-encoded for you, "
-                "creating the file if it is absent. This is how a file too "
-                "big for a single ~2 KB call is built: write_file the first "
-                "chunk, then one append_to_file per remaining chunk, checking "
-                "the reported bytes= each time so a short chunk is caught at "
-                "once."
+                "creating the file if it is absent. Content longer than one "
+                "~2 KB call is split into several appends for you. Use "
+                "write_file to create or replace a file outright; this is for "
+                "adding to one that is already there."
             ),
             input_schema={
                 "type": "object",
@@ -353,7 +353,10 @@ def builtin_tool_specs() -> list[ToolSpec]:
                 "structured patch for you. Every edit requires exactly one "
                 "occurrence of its old text unless you say otherwise; if any "
                 "edit fails, nothing is written and the result names the "
-                "failing edit by its 1-based index."
+                "failing edit by its 1-based index. A batch too big for one "
+                "~2 KB call is split into several patches, which are then "
+                "all-or-nothing per patch rather than across the whole batch: "
+                "the result says so when that happens."
             ),
             input_schema={
                 "type": "object",
@@ -655,7 +658,17 @@ def helper_run_line(command: str) -> str:
 
 
 def _b64(text: str) -> str:
-    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+    """Base64 an argument, quoted so an empty payload survives the shell.
+
+    Without the quotes an empty blob leaves a bare ``--new-b64`` with nothing
+    after it, and the helper rejects the call -- which would make deleting text
+    by replacing it with "" impossible.
+    """
+    return shlex.quote(base64.b64encode(text.encode("utf-8")).decode("ascii"))
+
+
+def _b64_bytes(data: bytes) -> str:
+    return shlex.quote(base64.b64encode(data).decode("ascii"))
 
 
 def _need_str(args: dict, key: str) -> str:
@@ -675,8 +688,8 @@ def _need_int(args: dict, key: str) -> int:
     raise ValueError(f"'{key}' must be an integer")
 
 
-def _structured_patch_json(args: dict) -> str:
-    """Pack the ``apply_file_edits`` edit list into the helper's patch JSON."""
+def _packed_edits(args: dict) -> list[dict]:
+    """Pack the ``apply_file_edits`` edit list into the helper's patch entries."""
     edits = args.get("edits")
     if not isinstance(edits, list) or not edits:
         raise ValueError("'edits' must be a non-empty list")
@@ -686,8 +699,12 @@ def _structured_patch_json(args: dict) -> str:
             raise ValueError(f"edit {i} must be an object")
         try:
             item: dict = {
-                "old_b64": _b64(_need_str(edit, "old")),
-                "new_b64": _b64(_need_str(edit, "new")),
+                "old_b64": base64.b64encode(
+                    _need_str(edit, "old").encode("utf-8")
+                ).decode("ascii"),
+                "new_b64": base64.b64encode(
+                    _need_str(edit, "new").encode("utf-8")
+                ).decode("ascii"),
             }
             if "expect_count" in edit:
                 expect = edit["expect_count"]
@@ -699,11 +716,77 @@ def _structured_patch_json(args: dict) -> str:
         except ValueError as exc:
             raise ValueError(f"edit {i}: {exc}") from None
         packed.append(item)
-    return json.dumps({"edits": packed}, separators=(",", ":"))
+    return packed
 
 
-def helper_edit_line(name: str, args: dict) -> str:
-    """Build the ``ludvart_helper`` line for one of the file-editing tools.
+def _payload_line(sub: str, quoted: str, data: bytes, dry: bool) -> str:
+    line = f"{HELPER_PATH} {sub} {quoted} --b64 {_b64_bytes(data)}"
+    return line + " --dry-run" if dry else line
+
+
+def _content_lines(sub: str, quoted: str, content: str, dry: bool) -> list[str]:
+    """Lines that put ``content`` in a file: one call, or a write plus appends.
+
+    The split is on raw bytes rather than characters. The helper writes what it
+    decodes, so a multi-byte character divided across two calls still lands
+    intact on disk.
+    """
+    data = content.encode("utf-8")
+    # Budget against 'append', the longer of the two subcommands, so every
+    # chunk fits whichever call carries it.
+    overhead = len(_payload_line("append", quoted, b"", dry))
+    per_chunk = ((HELPER_MAX_LINE - overhead) // 4) * 3
+    if per_chunk < 1:
+        raise ValueError(
+            "'path' is too long to leave room for any content in one call"
+        )
+    if len(data) <= per_chunk:
+        return [_payload_line(sub, quoted, data, dry)]
+    if dry:
+        raise ValueError(
+            "dry_run cannot preview content this large, because it has to be "
+            "split across several calls; drop dry_run or send less at a time"
+        )
+    lines = [_payload_line(sub, quoted, data[:per_chunk], False)]
+    lines += [
+        _payload_line("append", quoted, data[i : i + per_chunk], False)
+        for i in range(per_chunk, len(data), per_chunk)
+    ]
+    return lines
+
+
+def _patch_line(quoted: str, items: list[dict], dry: bool) -> str:
+    blob = json.dumps({"edits": items}, separators=(",", ":"))
+    line = f"{HELPER_PATH} structured-patch {quoted} --b64 {_b64(blob)}"
+    return line + " --dry-run" if dry else line
+
+
+def _patch_lines(quoted: str, args: dict, dry: bool) -> list[str]:
+    """Group the edits into as few structured-patch calls as will fit."""
+    lines: list[str] = []
+    batch: list[dict] = []
+    for i, item in enumerate(_packed_edits(args), 1):
+        if len(_patch_line(quoted, batch + [item], dry)) <= HELPER_MAX_LINE:
+            batch.append(item)
+            continue
+        if not batch:
+            raise ValueError(
+                f"edit {i} alone is past the ~{HELPER_MAX_LINE} bytes the "
+                "terminal channel carries; shorten it, or replace that hunk "
+                "with replace_file_lines"
+            )
+        lines.append(_patch_line(quoted, batch, dry))
+        batch = [item]
+    lines.append(_patch_line(quoted, batch, dry))
+    return lines
+
+
+def helper_edit_lines(name: str, args: dict) -> list[str]:
+    """Build the ``ludvart_helper`` call(s) for one file-editing tool call.
+
+    Usually a single line. A payload too big for the terminal channel is split
+    into a sequence that builds the same result, since refusing it would only
+    hand the model a chunking problem it has no better way to solve.
 
     Raises :class:`ValueError` with a model-readable reason, so a malformed
     call is handed back for correction instead of being typed at the terminal.
@@ -712,34 +795,46 @@ def helper_edit_line(name: str, args: dict) -> str:
     path = _need_str(args, "path")
     if not path.strip():
         raise ValueError("'path' must not be empty")
-    parts = [HELPER_PATH, sub, shlex.quote(path)]
+    quoted = shlex.quote(path)
+    dry = bool(args.get("dry_run")) and name in HELPER_DRY_RUN_TOOLS
     if sub in ("write", "append"):
-        parts += ["--b64", _b64(_need_str(args, "content"))]
-    elif sub == "replace":
+        return _content_lines(sub, quoted, _need_str(args, "content"), dry)
+    if sub == "structured-patch":
+        return _patch_lines(quoted, args, dry)
+    parts = [HELPER_PATH, sub, quoted]
+    if sub == "replace":
         parts += ["--old-b64", _b64(_need_str(args, "old"))]
         parts += ["--new-b64", _b64(_need_str(args, "new"))]
         if args.get("expect_count") is not None:
             parts += ["--expect-count", str(_need_int(args, "expect_count"))]
         if args.get("count") is not None:
             parts += ["--count", str(_need_int(args, "count"))]
-    elif sub == "replace-range":
+    else:
         parts += ["--start", str(_need_int(args, "start"))]
         parts += ["--end", str(_need_int(args, "end"))]
         parts += ["--b64", _b64(_need_str(args, "content"))]
-    else:
-        parts += ["--b64", _b64(_structured_patch_json(args))]
-    if args.get("dry_run") and name in HELPER_DRY_RUN_TOOLS:
+    if dry:
         parts.append("--dry-run")
     line = " ".join(parts)
     if len(line) > HELPER_MAX_LINE:
         raise ValueError(
             f"the command line would be {len(line)} bytes, past the "
-            f"~{HELPER_MAX_LINE} the terminal channel carries; send less per "
-            "call -- write_file the first chunk and append_to_file the rest, "
-            "or change part of the file with replace_in_file / "
-            "replace_file_lines instead of rewriting all of it"
+            f"~{HELPER_MAX_LINE} the terminal channel carries, and this edit "
+            "cannot be split; send a smaller old/new pair, or rewrite the "
+            "region with replace_file_lines"
         )
-    return line
+    return [line]
+
+
+#: ``exit=`` on the helper's END sentinel is the real status of a call. It sits
+#: well inside the first screen row, so a wrapped sentinel still matches.
+_HELPER_EXIT_RE = re.compile(r"LUDVART:END[^\n]*?exit=(\d+)")
+
+
+def helper_exit_code(result: str) -> int | None:
+    """The exit status of the last helper frame visible in ``result``."""
+    hits = _HELPER_EXIT_RE.findall(result)
+    return int(hits[-1]) if hits else None
 
 
 def b64_decode(args: dict) -> str:

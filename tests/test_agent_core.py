@@ -627,17 +627,25 @@ def test_run_command_rejects_an_empty_command():
 
 
 def _edit_line(name, args):
-    """Run a file-editing tool and return the helper line it typed."""
-    host = RecordingHost()
+    """Run a file-editing tool and return the single helper line it typed."""
+    lines = _edit_lines(name, args)
+    return lines if isinstance(lines, str) else lines[0]
+
+
+def _edit_lines(name, args, host=None):
+    """Run a file-editing tool and return every helper line it typed."""
+    host = host or RecordingHost()
     core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
     out = core._run_tool(ToolCall(id="c1", name=name, input=args))
     if not host.tool_calls:
         return out
-    injected, injected_args = host.tool_calls[0]
-    assert injected == "inject_input", injected
-    assert injected_args["submit"] is True
-    assert injected_args["interpret_escapes"] is False
-    return injected_args["text"]
+    typed = []
+    for injected, injected_args in host.tool_calls:
+        assert injected == "inject_input", injected
+        assert injected_args["submit"] is True
+        assert injected_args["interpret_escapes"] is False
+        typed.append(injected_args["text"])
+    return typed
 
 
 def test_write_file_encodes_the_content_and_quotes_the_path():
@@ -727,23 +735,99 @@ def test_append_to_file_has_no_dry_run():
     print("append_to_file has no dry run: OK")
 
 
-def test_oversized_edit_is_refused_before_it_is_typed():
-    """A truncated command line would run as something other than intended."""
+def test_empty_replacement_survives_the_shell():
+    """Deleting text means an empty --new-b64, which must be quoted.
+
+    Unquoted it collapses to a bare '--new-b64' with nothing after it, and the
+    helper rejects the whole call with exit=7.
+    """
+    line = _edit_line(
+        "replace_in_file", {"path": "app.py", "old": "DROP\n", "new": ""}
+    )
+
+    assert line.endswith("--new-b64 ''"), line
+    print("empty replacement survives the shell: OK")
+
+
+def test_large_write_is_split_into_a_write_then_appends():
+    import base64
+
+    content = "".join(f"line {i}\n" for i in range(600))
+    lines = _edit_lines("write_file", {"path": "big.txt", "content": content})
+
+    assert len(lines) > 1, lines
+    assert all(len(line) <= 2000 for line in lines), [len(x) for x in lines]
+    subs = [line.split()[1] for line in lines]
+    assert subs[0] == "write" and set(subs[1:]) == {"append"}, subs
+    rebuilt = b"".join(
+        base64.b64decode(line.rsplit(" ", 1)[1].strip("'")) for line in lines
+    )
+    assert rebuilt.decode() == content
+    print("large write is split into a write then appends: OK")
+
+
+def test_large_edit_batch_is_split_into_several_patches():
+    import base64, json
+
+    edits = [{"old": f"OLD{i:03d}" * 8, "new": f"NEW{i:03d}" * 8} for i in range(20)]
+    lines = _edit_lines("apply_file_edits", {"path": "app.py", "edits": edits})
+
+    assert len(lines) > 1, len(lines)
+    assert all(len(line) <= 2000 for line in lines), [len(x) for x in lines]
+    seen = []
+    for line in lines:
+        blob = line.split(" --b64 ", 1)[1].strip("'")
+        seen += json.loads(base64.b64decode(blob).decode())["edits"]
+    assert [base64.b64decode(e["old_b64"]).decode() for e in seen] == [
+        e["old"] for e in edits
+    ]
+    print("large edit batch is split into several patches: OK")
+
+
+class _FailingHost(RecordingHost):
+    """Reports a helper failure on the second call, as a bad chunk would."""
+
+    def run_terminal_tool(self, name, args):
+        self.tool_calls.append((name, args))
+        code = 0 if len(self.tool_calls) < 2 else 8
+        return f"<<<LUDVART:END op=append exit={code} path=big.txt>>>"
+
+
+def test_a_split_payload_stops_at_the_first_failed_call():
+    """Appending after a failed chunk would leave a plausible but wrong file."""
+    host = _FailingHost()
+    content = "".join(f"line {i}\n" for i in range(600))
+
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+    out = core._run_tool(
+        ToolCall(
+            id="c1", name="write_file", input={"path": "big.txt", "content": content}
+        )
+    )
+
+    assert len(host.tool_calls) == 2, len(host.tool_calls)
+    assert "call 2 failed" in out, out
+    assert "were not made" in out, out
+    assert "exit=8" in out, out
+    print("a split payload stops at the first failed call: OK")
+
+
+def test_oversized_single_edit_is_refused_before_it_is_typed():
+    """A replace cannot be split, so it must be refused rather than truncated."""
     host = RecordingHost()
     core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
 
     out = core._run_tool(
         ToolCall(
             id="c1",
-            name="write_file",
-            input={"path": "big.txt", "content": "x" * 4000},
+            name="replace_in_file",
+            input={"path": "big.txt", "old": "x" * 4000, "new": "y"},
         )
     )
 
-    assert "past the ~2000" in out, out
-    assert "append_to_file" in out, out
+    assert "cannot be split" in out, out
     assert host.tool_calls == [], host.tool_calls
-    print("oversized edit is refused before it is typed: OK")
+    print("oversized single edit is refused before it is typed: OK")
 
 
 def test_malformed_edit_is_reported_not_typed():
@@ -982,7 +1066,11 @@ def main():
     test_replace_file_lines_accepts_numbers_sent_as_strings()
     test_apply_file_edits_packs_the_structured_patch()
     test_append_to_file_has_no_dry_run()
-    test_oversized_edit_is_refused_before_it_is_typed()
+    test_empty_replacement_survives_the_shell()
+    test_large_write_is_split_into_a_write_then_appends()
+    test_large_edit_batch_is_split_into_several_patches()
+    test_a_split_payload_stops_at_the_first_failed_call()
+    test_oversized_single_edit_is_refused_before_it_is_typed()
     test_malformed_edit_is_reported_not_typed()
     test_failed_turn_is_rolled_back_out_of_the_history()
     test_a_cancel_interrupts_the_stream_and_keeps_the_partial_answer()

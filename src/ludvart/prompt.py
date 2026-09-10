@@ -52,8 +52,9 @@ hand-write the helper yourself.
     shell quoting to get wrong. 'run_shell_command' runs a command;
     'write_file' and 'append_to_file' create or extend a file;
     'replace_in_file', 'replace_file_lines' and 'apply_file_edits' edit one.
-    They also check the ~2 KB per-call limit for you instead of letting a long
-    line arrive truncated.
+    Send the whole payload in one call: content or a batch of edits too big
+    for the terminal channel is split into a sequence of helper calls for you,
+    so there is no need to chunk anything by hand.
   - Those tools type a command line, so they only work at a shell prompt:
     while vim, less, a pager or a REPL owns the screen, that text is just
     keystrokes. Check the screen first and use inject_input for interactive

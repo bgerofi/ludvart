@@ -204,13 +204,13 @@ def test_run_command_tool_line_is_previewed_decoded():
 
 def test_file_edit_tool_line_is_previewed_decoded():
     """An approval gate showing only a base64 blob would be worthless."""
-    from ludvart.tools import helper_edit_line
+    from ludvart.tools import helper_edit_lines
 
     runner, _writes = _make_ludvart()
-    line = helper_edit_line(
+    line = helper_edit_lines(
         "replace_in_file",
         {"path": "app.py", "old": "DEBUG", "new": "PRODUCTION"},
-    )
+    )[0]
 
     prompt = runner._inject_approval_prompt(line)
 

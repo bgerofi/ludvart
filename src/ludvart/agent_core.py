@@ -607,10 +607,40 @@ class AgentCore:
     def _tool_helper_edit(self, name: str, args: dict) -> str:
         """Encode a file edit and inject it as one ``ludvart_helper`` line."""
         try:
-            line = builtin.helper_edit_line(name, dict(args))
+            lines = builtin.helper_edit_lines(name, dict(args))
         except ValueError as exc:
             return f"[ludvart] {name}: {exc}."
-        return self._inject_helper_line(line)
+        if len(lines) == 1:
+            return self._inject_helper_line(lines[0])
+        return self._inject_helper_sequence(name, lines)
+
+    def _inject_helper_sequence(self, name: str, lines: list[str]) -> str:
+        """Run a payload too big for one call as a sequence of helper calls.
+
+        Stops at the first call that is refused or reports a non-zero exit, so
+        a later chunk cannot land on top of a failure and leave a file that
+        looks written but is not. Only the last screen is returned; a screen
+        per chunk would cost more context than the split saves.
+        """
+        done = []
+        for i, line in enumerate(lines, 1):
+            out = self._inject_helper_line(line)
+            refused = out.startswith("[ludvart]")
+            code = None if refused else builtin.helper_exit_code(out)
+            done.append(f"call {i}: " + ("refused" if refused else f"exit={code}"))
+            if refused or code:
+                return (
+                    f"[ludvart] {name}: this payload needed {len(lines)} helper "
+                    f"calls and call {i} failed, so calls {i + 1}..{len(lines)} "
+                    "were not made. The file holds only what the earlier calls "
+                    f"wrote -- check it before retrying. Calls: "
+                    f"{'; '.join(done)}.\nLast screen:\n{out}"
+                )
+        return (
+            f"[ludvart] {name}: payload split across {len(lines)} helper calls, "
+            f"all of which succeeded ({'; '.join(done)}).\n"
+            f"Last screen:\n{out}"
+        )
 
     # -- past screen snapshots ------------------------------------------------
 
