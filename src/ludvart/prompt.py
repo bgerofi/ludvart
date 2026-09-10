@@ -46,9 +46,14 @@ hand-write the helper yourself.
     + """
 
 ### Usage conventions
-  - Build the base64 arguments with the native 'b64_encode' tool and read the
-    result frames with 'b64_decode', rather than piping through 'printf |
-    base64' / 'base64 -d' in the shell.
+  - Once you have confirmed the helper is installed, run a non-interactive
+    command with the single 'b64_encode_and_run_command' tool: it encodes the
+    command and injects the helper's 'run' line in one call, so pairing
+    'b64_encode' with 'inject_input' is not needed for this.
+  - Build the base64 arguments of the *other* subcommands (--b64 / --old-b64 /
+    --new-b64) with the native 'b64_encode' tool and read the result frames
+    with 'b64_decode', rather than piping through 'printf | base64' /
+    'base64 -d' in the shell.
   - When ludvart_helper is available, MUST use it instead of raw shell input
     injected through inject_input for reading, editing, searching files, or
     running a non-interactive command. Raw injected shell input is only for

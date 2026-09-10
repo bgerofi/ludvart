@@ -160,6 +160,7 @@ def main():
     test_cancel_unblocks_pending_approval_as_declined()
     test_helper_run_preview_decodes_command()
     test_helper_run_preview_keeps_invalid_payload()
+    test_run_command_tool_line_is_previewed_decoded()
     test_revoke_approval_reprompts_future_injections()
     test_revoke_approval_without_grant_is_noop_message()
     test_revoke_approval_is_completable()
@@ -185,6 +186,19 @@ def test_helper_run_preview_keeps_invalid_payload():
 
     assert runner._inject_approval_preview(text) == text
     print("helper run approval preview keeps invalid payload: OK")
+
+
+def test_run_command_tool_line_is_previewed_decoded():
+    """b64_encode_and_run_command must not hide the command behind base64."""
+    from ludvart.tools import helper_run_line
+
+    runner, _writes = _make_ludvart()
+    command = "rm -rf build && make install"
+
+    prompt = runner._inject_approval_prompt(helper_run_line(command))
+
+    assert f'"{command}"' in prompt, prompt
+    print("run_command tool line is previewed decoded: OK")
 
 
 if __name__ == "__main__":

@@ -558,6 +558,8 @@ class AgentCore:
             return self._tool_get_past_snapshot(call.input)
         if call.name == "b64_encode":
             return builtin.b64_encode(call.input)
+        if call.name == "b64_encode_and_run_command":
+            return self._tool_run_command(call.input)
         if call.name == "b64_decode":
             return builtin.b64_decode(call.input)
         if call.name == "web_search":
@@ -571,6 +573,28 @@ class AgentCore:
         if self.mcp is not None and self.mcp.is_mcp_tool(call.name):
             return self.mcp.call_tool(call.name, dict(call.input))
         return f"[ludvart] unknown tool: {call.name}"
+
+    def _tool_run_command(self, args: dict) -> str:
+        """Encode a shell command and inject it as one ``ludvart_helper run`` line.
+
+        Collapses what used to be a b64_encode call followed by an inject_input
+        call. It goes out through the ordinary inject_input path, so the user's
+        approval gate still fires and still previews the decoded command.
+        """
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return (
+                "[ludvart] b64_encode_and_run_command: 'command' must be a "
+                "non-empty string."
+            )
+        return self.host.run_terminal_tool(
+            "inject_input",
+            {
+                "text": builtin.helper_run_line(command),
+                "submit": True,
+                "interpret_escapes": False,
+            },
+        )
 
     # -- past screen snapshots ------------------------------------------------
 

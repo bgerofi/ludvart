@@ -24,6 +24,9 @@ from .llm import ToolSpec
 #: executed by the agent loop itself.
 CLIENT_TOOL_NAMES = frozenset({"inject_input", "capture_screen_history"})
 
+#: The helper is deliberately not on PATH, so every call spells out its path.
+HELPER_PATH = "~/.ludvart/bin/ludvart_helper"
+
 #: Cap on how much fetch_url writes to /tmp, so a hostile or accidental huge
 #: response cannot fill the disk on the host running ludvart.
 FETCH_URL_MAX_BYTES = 10 * 1024 * 1024
@@ -61,7 +64,10 @@ def builtin_tool_specs() -> list[ToolSpec]:
                 "newline -- on the final one to execute). To put a large file "
                 "on the machine, do not split a command line at all: use "
                 "ludvart_helper write for the first chunk and append for each "
-                "of the rest."
+                "of the rest. For a non-interactive shell command, prefer "
+                "b64_encode_and_run_command, which does the encoding and the "
+                "injection in a single call and reports the command's real "
+                "exit status."
             ),
             input_schema={
                 "type": "object",
@@ -105,6 +111,44 @@ def builtin_tool_specs() -> list[ToolSpec]:
                     },
                 },
                 "required": ["text"],
+            },
+        ),
+        ToolSpec(
+            name="b64_encode_and_run_command",
+            description=(
+                "Run a non-interactive shell command on the user's machine in "
+                "ONE call. The command is base64-encoded here and injected as "
+                "a single '" + HELPER_PATH + " run --b64 ...' line, so you do "
+                "NOT need a separate b64_encode call and there is no shell "
+                "quoting to get wrong. This needs ludvart_helper to be "
+                "installed; once you have confirmed that (e.g. with '"
+                + HELPER_PATH
+                + " info'), prefer this over pairing b64_encode "
+                "with inject_input for every non-interactive command. Pass the "
+                "command exactly as you would type it at a shell prompt -- "
+                "pipes, redirections, quotes, '&&' and environment prefixes "
+                "all work, since it is run through the shell. Its stdout and "
+                "stderr go to the terminal, and the result carries the screen "
+                "plus the helper's END sentinel, whose exit= is the command's "
+                "real status: read it before judging whether the command "
+                "worked. Use inject_input instead for interactive programs "
+                "(vim, less, a REPL) and for sending keystrokes."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": (
+                            "The shell command line to run, exactly as you "
+                            "would type it, e.g. 'make test 2>&1 | tail -n 40'. "
+                            "Do not base64-encode it yourself and do not wrap "
+                            "it in a ludvart_helper invocation -- both are done "
+                            "for you."
+                        ),
+                    },
+                },
+                "required": ["command"],
             },
         ),
         ToolSpec(
@@ -342,6 +386,16 @@ def b64_encode(args: dict) -> str:
     if not isinstance(text, str):
         return "[ludvart] b64_encode: 'text' must be a string"
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def helper_run_line(command: str) -> str:
+    """The ``ludvart_helper run`` line that executes ``command`` on the terminal.
+
+    Base64 keeps the command opaque to the shell that types it, so quoting,
+    pipes and newlines survive injection untouched.
+    """
+    blob = base64.b64encode(command.encode("utf-8")).decode("ascii")
+    return f"{HELPER_PATH} run --b64 {blob}"
 
 
 def b64_decode(args: dict) -> str:

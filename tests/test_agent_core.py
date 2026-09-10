@@ -583,6 +583,49 @@ def test_last_turn_compaction_uses_a_focused_instruction():
     print("last-turn compaction uses a focused instruction: OK")
 
 
+def test_run_command_injects_one_encoded_helper_line():
+    """The encode + inject pair collapses into a single tool call."""
+    import base64
+
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+    command = "make test 2>&1 | tail -n 40 && echo 'done'"
+
+    out = core._run_tool(
+        ToolCall(
+            id="c1",
+            name="b64_encode_and_run_command",
+            input={"command": command},
+        )
+    )
+
+    assert len(host.tool_calls) == 1, host.tool_calls
+    name, args = host.tool_calls[0]
+    # It rides the existing inject_input path, so the approval gate still fires.
+    assert name == "inject_input", name
+    assert args["submit"] is True
+    assert args["interpret_escapes"] is False
+    assert out == "tool-out:inject_input", out
+
+    prefix, _, blob = args["text"].rpartition(" ")
+    assert prefix == "~/.ludvart/bin/ludvart_helper run --b64", prefix
+    assert base64.b64decode(blob, validate=True).decode() == command
+    print("run_command injects one encoded helper line: OK")
+
+
+def test_run_command_rejects_an_empty_command():
+    host = RecordingHost()
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    out = core._run_tool(
+        ToolCall(id="c1", name="b64_encode_and_run_command", input={"command": "  "})
+    )
+
+    assert "must be a non-empty string" in out, out
+    assert host.tool_calls == [], host.tool_calls
+    print("run_command rejects an empty command: OK")
+
+
 def test_failed_turn_is_rolled_back_out_of_the_history():
     """A turn that dies between a tool call and its result must leave no trace.
 
@@ -795,6 +838,8 @@ def main():
     test_a_resumed_session_renders_with_a_live_trailing_block()
     test_compact_on_demand_ignores_the_threshold()
     test_last_turn_compaction_uses_a_focused_instruction()
+    test_run_command_injects_one_encoded_helper_line()
+    test_run_command_rejects_an_empty_command()
     test_failed_turn_is_rolled_back_out_of_the_history()
     test_a_cancel_interrupts_the_stream_and_keeps_the_partial_answer()
     test_a_cancel_between_steps_stops_the_next_request()
