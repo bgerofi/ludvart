@@ -463,8 +463,8 @@ class AgentCore:
     _TOOL_REMINDER = (
         "<reminder>If you are operating on a console/terminal, remember to use "
         "your ludvart helper tools for file and command operations rather than "
-        "improvising ad-hoc shell commands: run_shell_command, write_file, "
-        "append_to_file, replace_in_file, replace_file_lines and "
+        "improvising ad-hoc shell commands: run_shell_command, read_file, "
+        "write_file, append_to_file, replace_in_file, replace_file_lines and "
         "apply_file_edits each encode the payload and type the helper line in "
         "a single call. For anything they do not cover, the helper is NOT on "
         "PATH: always invoke it by its full path, "
@@ -472,6 +472,10 @@ class AgentCore:
         "there, ask the user to run the /init_helpers command in the ludvart "
         "panel.</reminder>"
     )
+
+    #: Scrollback windows read_file falls back to, widening until the whole
+    #: base64 payload of a read is in hand.
+    _READ_HISTORY_WINDOWS = (400, 2000, 10000)
 
     #: Introduces the live screen inside the trailing block, so the model knows
     #: this one is current and the breadcrumbs above it are not.
@@ -563,6 +567,8 @@ class AgentCore:
             return builtin.b64_encode(call.input)
         if call.name == "run_shell_command":
             return self._tool_run_command(call.input)
+        if call.name == "read_file":
+            return self._tool_read_file(call.input)
         if call.name in builtin.HELPER_EDIT_SUBCOMMANDS:
             return self._tool_helper_edit(call.name, call.input)
         if call.name == "b64_decode":
@@ -608,6 +614,42 @@ class AgentCore:
         return self._inject_helper_line(
             builtin.helper_run_line(command, no_pager=bool(no_pager))
         )
+
+    def _tool_read_file(self, args: dict) -> str:
+        """Read a file on the terminal's machine and return it as data.
+
+        The helper prints the file base64-encoded, so the content arrives
+        exactly as it is on disk rather than as whatever the screen made of it.
+        """
+        path = args.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return "[ludvart] read_file: 'path' must be a non-empty string."
+        try:
+            start, end = builtin.read_window(args)
+        except ValueError as exc:
+            return f"[ludvart] read_file: {exc}."
+        out = self._inject_helper_line(builtin.helper_read_line(path, start, end))
+        if out.startswith("[ludvart]"):
+            return out
+        frame = builtin.helper_read_frame(out)
+        # A payload longer than the viewport has already scrolled off, so widen
+        # the search into the scrollback until the whole frame is in hand.
+        for length in self._READ_HISTORY_WINDOWS:
+            if frame is not None:
+                break
+            frame = builtin.helper_read_frame(
+                self.host.run_terminal_tool(
+                    "capture_screen_history", {"offset": -length, "length": length}
+                )
+            )
+        if frame is None:
+            return (
+                f"[ludvart] read_file: no complete helper frame for {path} came "
+                "back. Either the helper is not installed, or something other "
+                "than a shell prompt has the screen, or the output was too "
+                "large to keep -- check the screen, and ask for fewer lines."
+            )
+        return builtin.helper_read_result(path, start, end, frame)
 
     def _tool_helper_edit(self, name: str, args: dict) -> str:
         """Encode a file edit and inject it as one ``ludvart_helper`` line."""

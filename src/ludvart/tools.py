@@ -56,6 +56,11 @@ FETCH_URL_MAX_BYTES = 10 * 1024 * 1024
 #: are paged through with repeated calls (like an editor's reader).
 READ_MAX_LINES = 2000
 
+#: Lines per read_file call. That file crosses to us base64-encoded through the
+#: terminal screen, so the window is bounded by what the scrollback can hold
+#: rather than by what the model can read.
+HELPER_READ_MAX_LINES = 500
+
 #: Secondary cap on raw characters per read (e.g. pathologically long lines).
 READ_MAX_CHARS = 150_000
 
@@ -193,6 +198,53 @@ def builtin_tool_specs() -> list[ToolSpec]:
                     },
                 },
                 "required": ["command"],
+            },
+        ),
+        ToolSpec(
+            name="read_file",
+            description=(
+                "Read a file on the user's machine (the one in the terminal, "
+                "NOT the host ludvart runs on -- that is read_local_file) and "
+                "get its exact contents back as data. Prefer this over 'cat', "
+                "'sed -n' or 'head' through run_shell_command: those leave you "
+                "reading the file off a screen that wraps long lines, drops "
+                "whatever scrolled away and mixes the content with the shell "
+                "prompt. Here the helper base64-encodes the file, so what you "
+                "get back is byte-exact. Needs the helper installed and a "
+                "shell prompt on screen, exactly like run_shell_command. "
+                "Returns at most "
+                + str(HELPER_READ_MAX_LINES)
+                + " lines per call and says whether more follow, so page "
+                "through a long file with successive calls rather than "
+                "guessing at its contents. Re-read before editing rather than "
+                "trusting numbers or names remembered from an earlier turn."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Path of the file on the terminal's machine. '~' "
+                            "and relative paths are resolved there."
+                        ),
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": (
+                            "First line to return, 1-based. Defaults to 1."
+                        ),
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": (
+                            "Last line to return, inclusive. Defaults to "
+                            "start_line plus the per-call limit. A window "
+                            "larger than that limit is clipped to it."
+                        ),
+                    },
+                },
+                "required": ["path"],
             },
         ),
         ToolSpec(
@@ -853,6 +905,88 @@ def helper_exit_code(result: str) -> int | None:
     """The exit status of the last helper frame visible in ``result``."""
     hits = _HELPER_EXIT_RE.findall(result)
     return int(hits[-1]) if hits else None
+
+
+def read_window(args: dict) -> tuple[int, int]:
+    """The line range one ``read_file`` call asks the helper for.
+
+    Raises :class:`ValueError` with a model-readable reason.
+    """
+    start = 1 if args.get("start_line") is None else _need_int(args, "start_line")
+    if start < 1:
+        start = 1
+    if args.get("end_line") is None:
+        end = start + HELPER_READ_MAX_LINES - 1
+    else:
+        end = _need_int(args, "end_line")
+        if end < start:
+            raise ValueError("'end_line' must be >= 'start_line'")
+        end = min(end, start + HELPER_READ_MAX_LINES - 1)
+    return start, end
+
+
+def helper_read_line(path: str, start: int, end: int) -> str:
+    """The ``ludvart_helper read`` line that prints one window of a file."""
+    return f"{HELPER_PATH} read {shlex.quote(path)} --start {start} --end {end}"
+
+
+#: One read frame: the base64 payload between the sentinels, and the END meta.
+_HELPER_READ_FRAME_RE = re.compile(
+    r"<<<LUDVART:BEGIN op=read>>>(.*?)<<<LUDVART:END op=read exit=(\d+)([^>]*)>>>"
+)
+
+
+def helper_read_frame(screen: str) -> tuple[str, int, str] | None:
+    """Payload, exit status and metadata of the last read frame on ``screen``.
+
+    Rows are joined with nothing between them: the terminal wraps a long
+    payload across rows, and base64 carries no whitespace of its own, so
+    stripping and concatenating restores exactly what the helper wrote.
+    """
+    joined = "".join(row.strip() for row in screen.splitlines())
+    frames = _HELPER_READ_FRAME_RE.findall(joined)
+    if not frames:
+        return None
+    payload, code, meta = frames[-1]
+    return payload, int(code), meta.strip()
+
+
+def helper_read_result(
+    path: str, start: int, end: int, frame: tuple[str, int, str]
+) -> str:
+    """Render a read frame as file content, or as the helper's own failure."""
+    payload, code, meta = frame
+    if code:
+        return f"[ludvart] read_file: the helper reported exit={code} {meta}."
+    try:
+        content = base64.b64decode(payload, validate=True).decode("utf-8", "replace")
+    except ValueError:
+        return (
+            "[ludvart] read_file: the payload came back garbled, which happens "
+            "when the output is too big for the terminal to carry intact. Ask "
+            "for a smaller range of lines."
+        )
+    truncated = len(content) > READ_MAX_CHARS
+    if truncated:
+        content = content[:READ_MAX_CHARS]
+    found = re.search(r"\blines=(\d+)", meta)
+    total = int(found.group(1)) if found else None
+    last = min(end, total) if total is not None else end
+    body = content if content.endswith("\n") else content + "\n"
+    result = (
+        f"[ludvart] {path} lines {start}-{last}"
+        + (f" (of {total})" if total is not None else "")
+        + ":\n"
+        "--------------------------------------------------\n"
+        f"{body}"
+        "--------------------------------------------------\n"
+    )
+    notes = []
+    if total is not None and end < total:
+        notes.append(f"More lines follow; continue with start_line={end + 1}.")
+    if truncated:
+        notes.append(f"Output truncated to {READ_MAX_CHARS} characters.")
+    return result + ("\n".join(notes) + "\n" if notes else "")
 
 
 def b64_decode(args: dict) -> str:

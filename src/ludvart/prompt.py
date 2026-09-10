@@ -50,18 +50,24 @@ hand-write the helper yourself.
     helper command line: the common calls each have a dedicated tool that
     encodes the payload and types the line for you, in ONE call and with no
     shell quoting to get wrong. 'run_shell_command' runs a command;
-    'write_file' and 'append_to_file' create or extend a file;
-    'replace_in_file', 'replace_file_lines' and 'apply_file_edits' edit one.
+    'read_file' returns a file's exact contents; 'write_file' and
+    'append_to_file' create or extend a file; 'replace_in_file',
+    'replace_file_lines' and 'apply_file_edits' edit one.
     Send the whole payload in one call: content or a batch of edits too big
     for the terminal channel is split into a sequence of helper calls for you,
     so there is no need to chunk anything by hand.
+  - Never read a file by looking at 'cat' output on the screen: the screen
+    wraps, scrolls and mixes content with prompts. 'read_file' hands you the
+    bytes, one bounded window per call, and tells you when more lines follow.
+    Re-read before editing rather than trusting a number or a name you
+    remember from an earlier turn.
   - Those tools type a command line, so they only work at a shell prompt:
     while vim, less, a pager or a REPL owns the screen, that text is just
     keystrokes. Check the screen first and use inject_input for interactive
     work.
   - 'b64_encode' and 'b64_decode' are for what those tools do not cover --
     notably reading the base64 payload of a result frame, and driving a
-    subcommand (read, search) by hand -- rather than piping through
+    subcommand (search) by hand -- rather than piping through
     'printf | base64' / 'base64 -d' in the shell.
   - When ludvart_helper is available, MUST use it instead of raw shell input
     injected through inject_input for reading, editing, searching files, or

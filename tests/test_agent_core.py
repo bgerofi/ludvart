@@ -647,6 +647,125 @@ def test_run_command_rejects_an_empty_command():
     print("run_command rejects an empty command: OK")
 
 
+class _ReadingHost(RecordingHost):
+    """Answers a helper read the way a terminal would: a wrapped b64 frame."""
+
+    def __init__(self, content, total, columns=40, in_viewport=True):
+        super().__init__()
+        import base64
+
+        blob = base64.b64encode(content.encode()).decode()
+        rows = [blob[i:i + columns] for i in range(0, len(blob), columns)]
+        self.frame = "\n".join(
+            ["<<<LUDVART:BEGIN op=read>>>"]
+            + rows
+            + [f"<<<LUDVART:END op=read exit=0 path=f.txt lines={total} range=x>>>"]
+        )
+        self._in_viewport = in_viewport
+
+    def run_terminal_tool(self, name, args):
+        self.tool_calls.append((name, args))
+        if name == "inject_input":
+            return "prompt$ cmd\n" + self.frame if self._in_viewport else "prompt$ cmd"
+        return self.frame
+
+
+def test_read_file_returns_the_decoded_file_not_the_screen():
+    """Reading off the screen is what this tool exists to replace."""
+    content = "alpha\nbeta\ngamma\n"
+    host = _ReadingHost(content, total=4)
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    out = core._run_tool(
+        ToolCall(id="c1", name="read_file", input={"path": "f.txt"})
+    )
+
+    assert len(host.tool_calls) == 1, host.tool_calls
+    name, args = host.tool_calls[0]
+    assert name == "inject_input", name
+    assert args["text"] == "~/.ludvart/bin/ludvart_helper read f.txt --start 1 --end 500"
+    assert content in out, out
+    assert "lines 1-4 (of 4)" in out, out
+    assert "More lines follow" not in out, out
+    print("read_file returns the decoded file: OK")
+
+
+def test_read_file_reaches_into_the_scrollback_for_a_long_payload():
+    """A payload past the viewport is fetched from history, not lost."""
+    host = _ReadingHost("body\n", total=900, in_viewport=False)
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    out = core._run_tool(
+        ToolCall(id="c1", name="read_file", input={"path": "f.txt"})
+    )
+
+    assert [n for n, _ in host.tool_calls] == [
+        "inject_input",
+        "capture_screen_history",
+    ], host.tool_calls
+    assert host.tool_calls[1][1] == {"offset": -400, "length": 400}
+    assert "body" in out, out
+    # The window stopped short of the file, so the next call has to be told.
+    assert "continue with start_line=501" in out, out
+    print("read_file reaches into the scrollback: OK")
+
+
+def test_read_file_clips_an_oversized_window():
+    host = _ReadingHost("x\n", total=9000)
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    core._run_tool(
+        ToolCall(
+            id="c1",
+            name="read_file",
+            input={"path": "f.txt", "start_line": 100, "end_line": 9000},
+        )
+    )
+
+    assert host.tool_calls[0][1]["text"].endswith("--start 100 --end 599")
+    print("read_file clips an oversized window: OK")
+
+
+def test_read_file_reports_a_helper_failure():
+    host = RecordingHost(
+        tool_output="<<<LUDVART:BEGIN op=read>>><<<LUDVART:END op=read "
+        "exit=8 error=io detail=No such file path=gone.txt>>>"
+    )
+    core = AgentCore(ScriptedLLM([]), host, system_prompt="SYS")
+
+    out = core._run_tool(
+        ToolCall(id="c1", name="read_file", input={"path": "gone.txt"})
+    )
+
+    assert "exit=8" in out and "detail=No such file" in out, out
+    print("read_file reports a helper failure: OK")
+
+
+def test_a_wrapped_payload_is_reassembled_from_the_screen():
+    """The payload only survives if terminal row wrapping is undone exactly."""
+    import base64
+
+    import pyte
+
+    from ludvart.screen import LudvartScreen
+    from ludvart.tools import helper_read_frame
+
+    content = "".join(f"line {i} \u00e9\u4e2d\n" for i in range(80))
+    blob = base64.b64encode(content.encode()).decode()
+    screen = LudvartScreen(40, 24)
+    pyte.Stream(screen).feed(
+        "<<<LUDVART:BEGIN op=read>>>\r\n"
+        + blob
+        + "\r\n<<<LUDVART:END op=read exit=0 path=f.txt lines=81 range=1-500>>>\r\n"
+    )
+
+    frame = helper_read_frame("\n".join(screen.full_text(include_scrollback=True)))
+
+    assert frame is not None, "the frame scrolled out of reach"
+    assert base64.b64decode(frame[0], validate=True).decode() == content
+    print("a wrapped payload is reassembled from the screen: OK")
+
+
 def _edit_line(name, args):
     """Run a file-editing tool and return the single helper line it typed."""
     lines = _edit_lines(name, args)
@@ -1083,6 +1202,11 @@ def main():
     test_run_command_injects_one_encoded_helper_line()
     test_run_command_can_leave_the_pager_alone()
     test_run_command_rejects_an_empty_command()
+    test_read_file_returns_the_decoded_file_not_the_screen()
+    test_read_file_reaches_into_the_scrollback_for_a_long_payload()
+    test_read_file_clips_an_oversized_window()
+    test_read_file_reports_a_helper_failure()
+    test_a_wrapped_payload_is_reassembled_from_the_screen()
     test_write_file_encodes_the_content_and_quotes_the_path()
     test_replace_in_file_passes_both_payloads_and_the_guard()
     test_replace_file_lines_accepts_numbers_sent_as_strings()
