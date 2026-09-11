@@ -219,9 +219,9 @@ def ssh_backend_argv(
         "BatchMode=yes",
     ]
     if forward_ports:
-        argv.extend(["-o", "ExitOnForwardFailure=yes"])
+        argv.extend(["-o", "ExitOnForwardFailure=yes", "-g"])
         for port in forward_ports:
-            argv.extend(["-L", f"{port}:127.0.0.1:{port}"])
+            argv.extend(["-L", f"0.0.0.0:{port}:127.0.0.1:{port}"])
     argv.extend([host, remote])
     return argv
 

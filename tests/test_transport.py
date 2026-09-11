@@ -91,9 +91,10 @@ def test_ssh_backend_argv():
 def test_ssh_backend_argv_forwards_ports():
     argv = ssh_backend_argv("me@box", "/opt/ludvart", forward_ports=[33419, 8080])
     assert "ExitOnForwardFailure=yes" in argv
-    assert argv[argv.index("-L") + 1] == "33419:127.0.0.1:33419"
+    assert "-g" in argv
+    assert argv[argv.index("-L") + 1] == "0.0.0.0:33419:127.0.0.1:33419"
     assert argv.count("-L") == 2
-    assert "8080:127.0.0.1:8080" in argv
+    assert "0.0.0.0:8080:127.0.0.1:8080" in argv
     assert argv[-2] == "me@box"
     print("ssh_backend_argv adds local port forwards: OK")
 

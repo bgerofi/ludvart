@@ -92,8 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="PORT",
         help=(
-            "Forward localhost:PORT to the same port on a remote backend host. "
-            "May be specified more than once."
+            "Forward PORT on all local IPv4 interfaces to the same port on a "
+            "remote backend host. May be specified more than once."
         ),
     )
     parser.add_argument(
