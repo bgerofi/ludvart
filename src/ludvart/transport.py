@@ -18,6 +18,7 @@ channel.
 
 from __future__ import annotations
 
+import socket
 import subprocess
 import sys
 import threading
@@ -235,15 +236,28 @@ def ssh_backend(
     stderr: IO | int | None = None,
 ) -> Transport:
     """Run the backend on a remote host over SSH and connect to it."""
+    available_ports = [port for port in forward_ports if _can_bind_forward(port)]
     return spawn_transport(
         ssh_backend_argv(
             host,
             folder,
             remote_env=remote_env,
-            forward_ports=forward_ports,
+            forward_ports=available_ports,
         ),
         stderr=stderr,
     )
+
+
+def _can_bind_forward(port: int) -> bool:
+    """Return whether an all-interface local forward can bind ``port``."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("0.0.0.0", port))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
 
 
 def _sh_quote(value: str) -> str:

@@ -9,6 +9,7 @@ Run:
         && python tests/test_transport.py
 """
 
+import socket
 import subprocess
 import sys
 import time
@@ -16,6 +17,7 @@ import time
 from ludvart.protocol import MsgType, message
 from ludvart.transport import (
     Transport,
+    _can_bind_forward,
     local_backend_argv,
     parse_backend_spec,
     spawn_transport,
@@ -97,6 +99,18 @@ def test_ssh_backend_argv_forwards_ports():
     assert "0.0.0.0:8080:127.0.0.1:8080" in argv
     assert argv[-2] == "me@box"
     print("ssh_backend_argv adds local port forwards: OK")
+
+
+def test_forward_port_bind_probe():
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("0.0.0.0", 0))
+    port = listener.getsockname()[1]
+    try:
+        assert not _can_bind_forward(port)
+    finally:
+        listener.close()
+    assert _can_bind_forward(port)
+    print("occupied forward ports are detected before SSH starts: OK")
 
 
 def test_ssh_backend_argv_quotes_folder():
@@ -191,6 +205,7 @@ def main():
     test_local_backend_argv()
     test_ssh_backend_argv()
     test_ssh_backend_argv_forwards_ports()
+    test_forward_port_bind_probe()
     test_ssh_backend_argv_quotes_folder()
     test_ssh_backend_argv_injects_remote_env()
     test_transport_roundtrip_and_cleanup()
