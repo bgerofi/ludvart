@@ -188,7 +188,11 @@ def local_backend(
 
 
 def ssh_backend_argv(
-    host: str, folder: str, *, remote_env: dict[str, str] | None = None
+    host: str,
+    folder: str,
+    *,
+    remote_env: dict[str, str] | None = None,
+    forward_ports: Sequence[int] = (),
 ) -> list[str]:
     """Argv that runs the backend on ``host`` from the checkout at ``folder``.
 
@@ -208,14 +212,18 @@ def ssh_backend_argv(
         )
         cmd = f"env {assigns} {cmd}"
     remote = f"cd {_sh_quote(folder)} && exec {cmd}"
-    return [
+    argv = [
         "ssh",
         "-T",
         "-o",
         "BatchMode=yes",
-        host,
-        remote,
     ]
+    if forward_ports:
+        argv.extend(["-o", "ExitOnForwardFailure=yes"])
+        for port in forward_ports:
+            argv.extend(["-L", f"{port}:127.0.0.1:{port}"])
+    argv.extend([host, remote])
+    return argv
 
 
 def ssh_backend(
@@ -223,11 +231,18 @@ def ssh_backend(
     folder: str,
     *,
     remote_env: dict[str, str] | None = None,
+    forward_ports: Sequence[int] = (),
     stderr: IO | int | None = None,
 ) -> Transport:
     """Run the backend on a remote host over SSH and connect to it."""
     return spawn_transport(
-        ssh_backend_argv(host, folder, remote_env=remote_env), stderr=stderr
+        ssh_backend_argv(
+            host,
+            folder,
+            remote_env=remote_env,
+            forward_ports=forward_ports,
+        ),
+        stderr=stderr,
     )
 
 

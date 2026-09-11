@@ -28,6 +28,17 @@ def _parse_prefix(spec: str) -> bytes:
     )
 
 
+def _parse_port(spec: str) -> int:
+    """Parse a TCP port accepted by SSH local forwarding."""
+    try:
+        port = int(spec)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid port {spec!r}") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"port must be between 1 and 65535: {port}")
+    return port
+
+
 def main(argv: list[str] | None = None) -> int:
     # Backend mode: `ludvart serve` runs the agent-loop server on stdin/stdout
     # (spawned by a client locally or over SSH). It speaks only the framed
@@ -75,11 +86,24 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--forward-port",
+        action="append",
+        type=_parse_port,
+        default=[],
+        metavar="PORT",
+        help=(
+            "Forward localhost:PORT to the same port on a remote backend host. "
+            "May be specified more than once."
+        ),
+    )
+    parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help="Command (and args) to run. Prefix with '--' to pass flags through.",
     )
     args = parser.parse_args(argv)
+    if args.forward_port and args.backend == "local":
+        parser.error("--forward-port requires a remote --backend host:folder")
 
     command = args.command
     # argparse.REMAINDER keeps a leading '--' if the user wrote 'ludvart -- cmd'.
@@ -111,7 +135,7 @@ def _run_with_backend(args, command: list[str]) -> int:
     """
     from .backend_client import BackendReconnector
 
-    spawn = _backend_spawn(args.backend)
+    spawn = _backend_spawn(args.backend, args.forward_port)
 
     def _startup_log(text: str) -> None:
         sys.stderr.write(f"ludvart: {text}\n")
@@ -148,14 +172,16 @@ def _run_with_backend(args, command: list[str]) -> int:
         reconnector.close()
 
 
-def _backend_spawn(spec: str):
+def _backend_spawn(spec: str, forward_ports=()):
     """Return a zero-arg factory that spawns a fresh backend transport."""
     from .transport import local_backend, parse_backend_spec, ssh_backend
 
     if spec == "local":
+        if forward_ports:
+            raise ValueError("--forward-port requires a remote --backend host:folder")
         return lambda: local_backend()
     host, folder = parse_backend_spec(spec)
-    return lambda: ssh_backend(host, folder)
+    return lambda: ssh_backend(host, folder, forward_ports=forward_ports)
 
 
 if __name__ == "__main__":

@@ -88,6 +88,16 @@ def test_ssh_backend_argv():
     print("ssh_backend_argv builds the remote command: OK")
 
 
+def test_ssh_backend_argv_forwards_ports():
+    argv = ssh_backend_argv("me@box", "/opt/ludvart", forward_ports=[33419, 8080])
+    assert "ExitOnForwardFailure=yes" in argv
+    assert argv[argv.index("-L") + 1] == "33419:127.0.0.1:33419"
+    assert argv.count("-L") == 2
+    assert "8080:127.0.0.1:8080" in argv
+    assert argv[-2] == "me@box"
+    print("ssh_backend_argv adds local port forwards: OK")
+
+
 def test_ssh_backend_argv_quotes_folder():
     argv = ssh_backend_argv("h", "/weird path/with space")
     remote = argv[-1]
@@ -179,6 +189,7 @@ def main():
     test_parse_backend_spec_rejects_bad()
     test_local_backend_argv()
     test_ssh_backend_argv()
+    test_ssh_backend_argv_forwards_ports()
     test_ssh_backend_argv_quotes_folder()
     test_ssh_backend_argv_injects_remote_env()
     test_transport_roundtrip_and_cleanup()
