@@ -407,6 +407,69 @@ def test_fork_over_the_backend_command_path():
     print("/session fork reaches the backend command dispatcher: OK")
 
 
+def test_session_delete_removes_the_directory():
+    with _tmp_sessions() as root:
+        saved = SessionStore.create_new()
+        saved.save(
+            [("you", "delete me")],
+            [{"role": "user", "content": "delete me"}],
+            provider="custom",
+        )
+        sid = saved.session_id
+        current = SessionStore.create_new()
+        host = _run_command(f"session delete {sid}", current)
+
+        assert any("Deleted" in s for s in host.systems), host.systems
+        assert not os.path.exists(os.path.join(root, sid)), sid
+        assert sid not in [s["id"] for s in list_sessions()]
+    print("/session delete removes the stored session directory: OK")
+
+
+def test_session_delete_by_index_refreshes_the_cached_list():
+    with _tmp_sessions():
+        first = SessionStore.create_new()
+        first.save([("you", "first")], [], provider="custom")
+        second = SessionStore.create_new()
+        second.save([("you", "second")], [], provider="custom")
+        current = SessionStore.create_new()
+
+        client_ch, backend_ch = _pipe_pair()
+        t = threading.Thread(
+            target=lambda: serve(
+                backend_ch, llm=_FakeBackendLLM(), session=current
+            ),
+            daemon=True,
+        )
+        t.start()
+        client = BackendClient(client_ch)
+        host = RecordingHost()
+        assert client_ch.recv()["type"] == "hello"
+        client.command("session list", host)
+        client.command("session delete 1", host)
+        # The cache was refreshed by the delete, so index 1 is now the *other*
+        # session rather than the one already gone.
+        client.command("session delete 1", host)
+        client_ch.close()
+        t.join(timeout=2)
+        backend_ch.close()
+
+        remaining = [s["id"] for s in list_sessions()]
+        assert first.session_id not in remaining, remaining
+        assert second.session_id not in remaining, remaining
+    print("/session delete <n> resolves against a refreshed list: OK")
+
+
+def test_session_delete_refuses_the_session_in_use():
+    with _tmp_sessions() as root:
+        current = SessionStore.create_new()
+        current.save([("you", "live")], [], provider="custom")
+        host = _run_command(f"session delete {current.session_id}", current)
+
+        assert any("session in use" in s for s in host.systems), host.systems
+        assert os.path.exists(os.path.join(root, current.session_id))
+    print("/session delete refuses the session in use: OK")
+
+
 def main():
     test_agent_core_persists_to_backend_session()
     test_sessions_list_over_backend()
@@ -420,6 +483,9 @@ def main():
     test_fork_branches_the_conversation_and_switches_to_it()
     test_fork_rejects_a_turn_that_does_not_exist()
     test_fork_over_the_backend_command_path()
+    test_session_delete_removes_the_directory()
+    test_session_delete_by_index_refreshes_the_cached_list()
+    test_session_delete_refuses_the_session_in_use()
     print("\nALL backend session tests passed.")
 
 

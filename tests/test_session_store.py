@@ -15,6 +15,7 @@ from e2e_util import isolate_sessions
 from ludvart.session import (
     SessionStore,
     complete_slash,
+    delete_session,
     fork_history_end,
     list_sessions,
     load_session,
@@ -574,6 +575,57 @@ def test_rename_missing_session_returns_false():
     print("rename_session returns False for a missing session: OK")
 
 
+def test_delete_session_removes_the_timestamped_directory():
+    root = Path(tempfile.mkdtemp())
+    keep = SessionStore(
+        root=root, started_at=datetime(2026, 7, 2, 8, 5, 9, tzinfo=timezone.utc)
+    )
+    keep.save([("you", "keep me")], [])
+    doomed = SessionStore(
+        root=root, started_at=datetime(2026, 7, 2, 9, 0, 0, tzinfo=timezone.utc)
+    )
+    doomed.save([("you", "delete me")], [])
+
+    assert delete_session(doomed.session_id, root=root) is True
+    assert not (root / doomed.session_id).exists()
+    # The day still holds another session, so it stays.
+    assert (root / keep.session_id).exists()
+    assert [s["id"] for s in list_sessions(root=root)] == [keep.session_id]
+    print("delete_session removes the session directory: OK")
+
+
+def test_delete_session_removes_an_emptied_day_directory():
+    root = Path(tempfile.mkdtemp())
+    store = SessionStore(
+        root=root, started_at=datetime(2026, 7, 2, 8, 5, 9, tzinfo=timezone.utc)
+    )
+    store.save([("you", "only one")], [])
+
+    assert delete_session(store.session_id, root=root) is True
+    assert not (root / "2026-07-02").exists()
+    assert list_sessions(root=root) == []
+    print("delete_session cleans up the emptied day directory: OK")
+
+
+def test_delete_session_rejects_missing_and_malformed_ids():
+    root = Path(tempfile.mkdtemp())
+    store = SessionStore(
+        root=root, started_at=datetime(2026, 7, 2, 8, 5, 9, tzinfo=timezone.utc)
+    )
+    store.save([("you", "safe")], [])
+    outside = root.parent / "ludvart_delete_probe"
+    outside.mkdir(exist_ok=True)
+
+    assert delete_session("2099-01-01/00_00_00", root=root) is False
+    # An id is only ever a date/time pair, so a traversal never reaches a path.
+    assert delete_session("../ludvart_delete_probe", root=root) is False
+    assert delete_session("2026-07-02", root=root) is False
+    assert delete_session("", root=root) is False
+    assert outside.is_dir()
+    assert (root / store.session_id).exists()
+    print("delete_session rejects missing and malformed session ids: OK")
+
+
 def test_parse_rename_args():
     assert parse_rename_args('2026-07-02/08_05_09 "New title"') == (
         "2026-07-02/08_05_09",
@@ -630,7 +682,9 @@ def test_complete_slash_fork():
 def test_slash_candidates():
     """What Tab was choosing between, so an ambiguous Tab can show the options."""
     # A command whose subcommand has not been started yet: all of them.
-    assert slash_candidates("/session ") == ["fork", "list", "load", "new", "rename"]
+    assert slash_candidates("/session ") == [
+        "delete", "fork", "list", "load", "new", "rename",
+    ]
     assert slash_candidates("/model ") == ["add", "list", "remove", "use"]
     assert slash_candidates("/compact ") == ["last-turn"]
     # A started but ambiguous subcommand: only the ones still reachable.
@@ -760,6 +814,9 @@ if __name__ == "__main__":
     test_list_sessions_backward_compatible_without_title()
     test_rename_session_sets_and_clears()
     test_rename_missing_session_returns_false()
+    test_delete_session_removes_the_timestamped_directory()
+    test_delete_session_removes_an_emptied_day_directory()
+    test_delete_session_rejects_missing_and_malformed_ids()
     test_parse_rename_args()
     test_resolve_session_ref()
     test_complete_slash_rename()

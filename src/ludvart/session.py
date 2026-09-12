@@ -15,8 +15,11 @@ This module has no terminal/UI dependencies so it can be unit tested directly.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import re
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +42,10 @@ NEUTRAL_FAMILY = "neutral"
 _CONV_NAME = "conversation.json"
 _DAY_FMT = "%Y-%m-%d"
 _TIME_FMT = "%H_%M_%S"
+
+#: The exact shape of a session id, so a deletion can never be talked into
+#: touching a path outside the sessions root.
+_SESSION_ID_RE = re.compile(r"\d{4}-\d{2}-\d{2}/\d{2}_\d{2}_\d{2}")
 
 #: Provider names collapsed to the wire *shape* their ``llm_history`` uses.
 #: "openai" and "custom" both speak the OpenAI chat shape, so they share a
@@ -318,6 +325,29 @@ def rename_session(
     return True
 
 
+def delete_session(session_id: str, root: Path | str | None = None) -> bool:
+    """Delete a stored session: its timestamped directory and its contents.
+
+    Only a well-formed ``YYYY-MM-DD/HH_MM_SS`` id is accepted, so a crafted ref
+    cannot walk out of the sessions root. The day directory is removed too once
+    it holds nothing else. Returns ``False`` if the session is not there or
+    cannot be removed.
+    """
+    if not _SESSION_ID_RE.fullmatch(session_id or ""):
+        return False
+    base = Path(root) if root is not None else sessions_root()
+    sess = base / session_id
+    if not sess.is_dir():
+        return False
+    try:
+        shutil.rmtree(sess)
+    except OSError:
+        return False
+    with contextlib.suppress(OSError):
+        sess.parent.rmdir()  # only succeeds once the day holds nothing else
+    return True
+
+
 def parse_rename_args(text: str) -> tuple[str, str] | None:
     """Parse ``<session_id_or_index> <title>`` into ``(ref, title)``.
 
@@ -518,7 +548,7 @@ SLASH_COMMANDS: dict[str, list[str]] = {
     "model": ["add", "list", "remove", "use"],
     "perf": ["dump", "summary"],
     "revoke_approval": [],
-    "session": ["fork", "list", "load", "new", "rename"],
+    "session": ["delete", "fork", "list", "load", "new", "rename"],
 }
 
 # One-line usage + description for each command, shown by ``/help``. Ordered the
@@ -559,6 +589,10 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
     (
         "/session rename <id> \"Title\"",
         "Give a saved session a title so it is easy to find in the list.",
+    ),
+    (
+        "/session delete <n>|<id>",
+        "Delete a saved session and its stored directory (not the current one).",
     ),
     ("/model list", "List registered models (in-use and available are marked)."),
     ("/model add", "Register a new model endpoint (guided prompts, then verify)."),

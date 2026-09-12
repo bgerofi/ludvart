@@ -447,6 +447,7 @@ def _do_model_add(reg, manager, core, channel: FrameChannel, emit) -> None:
 def _handle_session(args, core, channel: FrameChannel, emit) -> None:
     from .session import (
         SessionStore,
+        delete_session,
         list_sessions,
         parse_rename_args,
         rename_session,
@@ -470,7 +471,8 @@ def _handle_session(args, core, channel: FrameChannel, emit) -> None:
             label = " ".join(label.split())  # a preview may span lines
             row(f"{marker}{str(i).rjust(width)}. {s['id']}  "
                 f"({s['count']} msgs)  {label}")
-        emit('Use /session load <n>|<id>, new, fork <turn>, or rename <id> "Title".')
+        emit('Use /session load <n>|<id>, new, fork <turn>, rename <id> "Title", '
+             'or delete <n>|<id>.')
     elif sub == "load":
         if len(args) < 2:
             emit("Usage: /session load <n>|<id>")
@@ -512,6 +514,24 @@ def _handle_session(args, core, channel: FrameChannel, emit) -> None:
             emit(f'Renamed {session_id} to "{title}".')
         else:
             emit(f"Cleared the title of {session_id}.")
+    elif sub == "delete":
+        if len(args) < 2:
+            emit("Usage: /session delete <n>|<id>")
+            return
+        session_id, error = resolve_session_ref(args[1], core.session_list)
+        if error is not None:
+            emit(error)
+            return
+        if core.session is not None and core.session.session_id == session_id:
+            emit("That is the session in use. Switch with /session new first.")
+            return
+        if not delete_session(session_id):
+            emit(f"Could not delete session: {session_id}")
+            return
+        # The cached list is what indices resolve against, so it must not keep
+        # offering the session that is now gone.
+        core.session_list = list_sessions()
+        emit(f"Deleted session {session_id}.")
     else:
         emit(f"Unknown subcommand: /session {sub}")
 
