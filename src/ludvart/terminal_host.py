@@ -79,7 +79,7 @@ class TerminalHost(ABC):
         # Default: nothing to render.
 
     def set_transcript(self, messages: list) -> None:
-        """Replace the visible transcript (e.g. after ``/sessions load|new``).
+        """Replace the visible transcript (e.g. after ``/session load|new``).
 
         ``messages`` is a list of ``[kind, text]`` pairs.
         """

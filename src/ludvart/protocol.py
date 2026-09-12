@@ -58,7 +58,7 @@ class MsgType:
     ATTACHED = "attached"
     #: C->B: submit a user question, carrying the ask-time screen snapshot.
     SUBMIT = "submit"
-    #: C->B: run an internal slash command (e.g. "/sessions list").
+    #: C->B: run an internal slash command (e.g. "/session list").
     COMMAND = "command"
     #: C->B: answer an approval prompt with "y" / "n" / "a".
     APPROVAL = "approval"

@@ -214,7 +214,7 @@ def _client_label(llm: LLMClient) -> str:
 
 
 def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
-    """Run a forwarded slash command (``/model`` or ``/sessions``) on the backend.
+    """Run a forwarded slash command (``/model`` or ``/session``) on the backend.
 
     Emits result lines as ``PANEL_UPDATE`` system frames, applies the effect
     (switch/add/remove model, load/new session), and always sends a terminating
@@ -231,8 +231,8 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
     result = None
     if cmd == "model":
         result = _handle_model(parts[1:], manager, core, channel, emit, payload)
-    elif cmd == "sessions":
-        _handle_sessions(parts[1:], core, channel, emit)
+    elif cmd == "session":
+        _handle_session(parts[1:], core, channel, emit)
     elif cmd == "compact":
         _do_compact(parts[1:], core, channel, emit)
     elif cmd == "mcp_refresh":
@@ -444,7 +444,7 @@ def _do_model_add(reg, manager, core, channel: FrameChannel, emit) -> None:
         _do_model_use(str(len(manager.models)), manager, core, channel, emit)
 
 
-def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
+def _handle_session(args, core, channel: FrameChannel, emit) -> None:
     from .session import (
         SessionStore,
         list_sessions,
@@ -470,15 +470,15 @@ def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
             label = " ".join(label.split())  # a preview may span lines
             row(f"{marker}{str(i).rjust(width)}. {s['id']}  "
                 f"({s['count']} msgs)  {label}")
-        emit('Use /sessions load <n>|<id>, new, fork <turn>, or rename <id> "Title".')
+        emit('Use /session load <n>|<id>, new, fork <turn>, or rename <id> "Title".')
     elif sub == "load":
         if len(args) < 2:
-            emit("Usage: /sessions load <n>|<id>")
+            emit("Usage: /session load <n>|<id>")
         else:
             _do_session_load(args[1], core, channel, emit)
     elif sub == "fork":
         if len(args) < 2:
-            emit("Usage: /sessions fork <turn>")
+            emit("Usage: /session fork <turn>")
         else:
             _do_session_fork(args[1], core, channel, emit)
     elif sub == "new":
@@ -496,7 +496,7 @@ def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
     elif sub == "rename":
         parsed = parse_rename_args(" ".join(args[1:]))
         if parsed is None:
-            emit('Usage: /sessions rename <id> New title')
+            emit('Usage: /session rename <id> New title')
             return
         ref, title = parsed
         session_id, error = resolve_session_ref(ref, core.session_list)
@@ -513,7 +513,7 @@ def _handle_sessions(args, core, channel: FrameChannel, emit) -> None:
         else:
             emit(f"Cleared the title of {session_id}.")
     else:
-        emit(f"Unknown subcommand: /sessions {sub}")
+        emit(f"Unknown subcommand: /session {sub}")
 
 
 def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:
@@ -529,7 +529,7 @@ def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:
     if ref.isdigit():
         idx = int(ref)
         if not (1 <= idx <= len(core.session_list)):
-            emit(f"No session #{idx}. Run /sessions list first.")
+            emit(f"No session #{idx}. Run /session list first.")
             return
         session_id = core.session_list[idx - 1]["id"]
     try:
@@ -576,7 +576,7 @@ def _do_session_fork(ref: str, core, channel: FrameChannel, emit) -> None:
     )
 
     if not ref.isdigit():
-        emit("Usage: /sessions fork <turn>")
+        emit("Usage: /session fork <turn>")
         return
     turn = int(ref)
     total = turn_count(core.transcript)
@@ -752,7 +752,7 @@ def serve(
     """Run the backend request loop on ``channel`` until the client disconnects.
 
     One turn at a time: read a ``SUBMIT``, run it, send a ``REPLY``; forwarded
-    ``/model`` and ``/sessions`` commands are handled via ``COMMAND``. A ``BYE``
+    ``/model`` and ``/session`` commands are handled via ``COMMAND``. A ``BYE``
     or a clean end-of-stream ends the loop. With ``llm`` given the model registry
     is bypassed (used by tests); otherwise the active registered model is built.
     ``session`` persists the conversation under ``~/.ludvart`` on the backend;

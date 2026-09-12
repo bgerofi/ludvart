@@ -125,7 +125,7 @@ class AgentCore:
         self.transcript: list[tuple[str, str]] = []
         #: Persistent conversation store on the backend (None disables saving).
         self.session = session
-        #: Cache of the last `/sessions list`, for index -> id resolution.
+        #: Cache of the last `/session list`, for index -> id resolution.
         self.session_list: list[dict] = []
         #: Prompt tokens reported by the most recent model call, so the context
         #: badge can be recomputed when the active model (window) changes.

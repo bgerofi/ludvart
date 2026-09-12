@@ -300,7 +300,7 @@ def test_end_to_end_log_and_reload():
     assert "summary" in kinds and "you" in kinds and "ludvart" in kinds
     assert any("DuplicateRefundError" in text for (_k, text) in after["messages"])
 
-    # Reload into a FRESH core, the way the backend's /sessions load does.
+    # Reload into a FRESH core, the way the backend's /session load does.
     core2 = _make_core(root)
     data = load_session(session_id, root=root)
     neutral = neutralize_history(

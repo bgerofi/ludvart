@@ -246,13 +246,27 @@ def test_tab_completion_completes_a_subcommand():
     for ch in "/sess":
         r._panel_key(ch.encode())
     r._panel_key(b"\t")
-    assert r._panel.editor.text == "/sessions ", repr(r._panel.editor.text)
+    assert r._panel.editor.text == "/session ", repr(r._panel.editor.text)
 
     for ch in "li":
         r._panel_key(ch.encode())
     r._panel_key(b"\t")
-    assert r._panel.editor.text == "/sessions list ", repr(r._panel.editor.text)
-    print("/sessions list tab completion: OK")
+    assert r._panel.editor.text == "/session list ", repr(r._panel.editor.text)
+    print("/session list tab completion: OK")
+
+
+def test_tab_lists_the_subcommands_when_ambiguous():
+    """Tab with nothing to fill in still shows what the subcommand can be."""
+    r, _, _ = make_ludvart()
+    for ch in "/model":
+        r._panel_key(ch.encode())
+    r._panel_key(b"\t")  # completes the name and leaves the cursor on the sub
+    assert r._panel.editor.text == "/model ", repr(r._panel.editor.text)
+    r._panel_key(b"\t")
+    assert r._panel.editor.text == "/model ", repr(r._panel.editor.text)
+    shown = "\n".join(text for _, text in r._panel.messages)
+    assert "add" in shown and "use" in shown, shown
+    print("Tab lists the subcommands when the choice is ambiguous: OK")
 
 
 if __name__ == "__main__":
@@ -266,4 +280,5 @@ if __name__ == "__main__":
     test_autoinit_removed()
     test_tab_completion()
     test_tab_completion_completes_a_subcommand()
+    test_tab_lists_the_subcommands_when_ambiguous()
     print("all init-helpers tests passed")

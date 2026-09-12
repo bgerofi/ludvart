@@ -46,6 +46,7 @@ from .helper_src import (
 from .session import (
     SLASH_COMMAND_HELP,
     complete_slash,
+    slash_candidates,
 )
 from .models import PROVIDER_MENU, SERVICE_PROMPT
 
@@ -65,7 +66,7 @@ DEFAULT_PREFIX = b"\x07"  # Ctrl-G
 #: to the backend instead of handling them itself. Everything else -- helper
 #: installation, perf timings, approval -- is genuinely client-side.
 _BACKEND_COMMANDS = frozenset(
-    {"model", "sessions", "compact", "mcp_refresh", "mcp_login", "mcp_auth"}
+    {"model", "session", "compact", "mcp_refresh", "mcp_login", "mcp_auth"}
 )
 
 # In addition to the prefix commands, a single dedicated "summon" key opens the
@@ -1507,9 +1508,17 @@ class Ludvart:
         panel = self._panel
         if panel is None:
             return
-        completed = complete_slash(panel.editor.text)
-        if completed is not None and completed != panel.editor.text:
+        text = panel.editor.text
+        completed = complete_slash(text)
+        if completed is not None and completed != text:
             panel.editor.set_text(completed)
+            panel.scroll = 0
+            return
+        # Nothing to fill in: show what the token could still become, the way a
+        # shell does on an ambiguous Tab.
+        options = slash_candidates(text)
+        if len(options) > 1:
+            panel.add_system("  ".join(options))
             panel.scroll = 0
 
     def _handle_slash_command(self, line: str) -> None:

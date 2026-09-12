@@ -23,7 +23,7 @@ DEFAULT_COMMAND = ["bash", "--norc", "-i"]
 
 #: Where a test run keeps the conversations it creates. An e2e script forks a
 #: real ludvart, which saves its conversation like any other run does, so
-#: without this they land in ~/.ludvart/sessions and /sessions lists them
+#: without this they land in ~/.ludvart/sessions and /session lists them
 #: alongside the developer's actual work. Session ids have one-second
 #: resolution, so parallel workers get a root each rather than racing to claim
 #: the same directory.

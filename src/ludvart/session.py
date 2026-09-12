@@ -176,7 +176,7 @@ class SessionStore:
     ) -> None:
         self.root = Path(root) if root is not None else sessions_root()
         if session_id is not None:
-            # Bind to an existing session (e.g. after ``/sessions load``).
+            # Bind to an existing session (e.g. after ``/session load``).
             self.session_id = session_id
             self.started_at = started_at or _parse_session_id(session_id)
         else:
@@ -352,7 +352,7 @@ def resolve_session_ref(
     if ref.isdigit():
         idx = int(ref)
         if not (1 <= idx <= len(session_list)):
-            return None, f"No session #{idx}. Run /sessions list first."
+            return None, f"No session #{idx}. Run /session list first."
         return session_list[idx - 1]["id"], None
     return ref, None
 
@@ -518,7 +518,7 @@ SLASH_COMMANDS: dict[str, list[str]] = {
     "model": ["add", "list", "remove", "use"],
     "perf": ["dump", "summary"],
     "revoke_approval": [],
-    "sessions": ["fork", "list", "load", "new", "rename"],
+    "session": ["fork", "list", "load", "new", "rename"],
 }
 
 # One-line usage + description for each command, shown by ``/help``. Ordered the
@@ -548,16 +548,16 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
         "/mcp_auth <server> <url>",
         "Finish /mcp_login by pasting the URL the browser was redirected to.",
     ),
-    ("/sessions list", "List saved conversation sessions (current is marked *)."),
-    ("/sessions load <n>|<id>", "Load and resume a saved session by number or id."),
-    ("/sessions new", "Start a fresh, empty conversation in a new session file."),
+    ("/session list", "List saved conversation sessions (current is marked *)."),
+    ("/session load <n>|<id>", "Load and resume a saved session by number or id."),
+    ("/session new", "Start a fresh, empty conversation in a new session file."),
     (
-        "/sessions fork <turn>",
+        "/session fork <turn>",
         "Branch the current conversation into a new session ending at turn "
         "[<turn>], and switch to it.",
     ),
     (
-        "/sessions rename <id> \"Title\"",
+        "/session rename <id> \"Title\"",
         "Give a saved session a title so it is easy to find in the list.",
     ),
     ("/model list", "List registered models (in-use and available are marked)."),
@@ -633,3 +633,21 @@ def complete_slash(text: str) -> str | None:
         return new if new != text else None
 
     return None
+
+
+def slash_candidates(text: str) -> list[str]:
+    """Return the completion candidates for the last token of ``text``.
+
+    What :func:`complete_slash` was choosing between, so the caller can show
+    the options when the completion is ambiguous (or when the subcommand has
+    not been started yet and every subcommand is still a candidate).
+    """
+    if not text.startswith("/"):
+        return []
+    parts = text[1:].split(" ")
+    if len(parts) == 1:
+        return [f"/{c}" for c in sorted(SLASH_COMMANDS) if c.startswith(parts[0])]
+    if len(parts) == 2:
+        subs = SLASH_COMMANDS.get(parts[0]) or []
+        return [s for s in subs if s.startswith(parts[1])]
+    return []

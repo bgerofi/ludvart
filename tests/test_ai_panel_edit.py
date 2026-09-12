@@ -229,7 +229,7 @@ def test_a_selection_is_shown_in_reverse_video():
 def test_a_system_row_is_clipped_to_the_width_not_wrapped():
     """List output stays one item per row so it can be scanned.
 
-    Wrapping a long ``/sessions list`` entry would push the next entry down a
+    Wrapping a long ``/session list`` entry would push the next entry down a
     line and turn the list into a wall of text; the tail of the line is the
     part worth losing.
     """

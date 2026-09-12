@@ -25,6 +25,7 @@ from ludvart.session import (
     resolve_session_ref,
     sanitize_history,
     sessions_root,
+    slash_candidates,
     turn_count,
     turn_numbers,
 )
@@ -100,7 +101,7 @@ def test_system_messages_not_persisted():
     store = SessionStore(root=root, started_at=datetime.now(timezone.utc))
     messages = [
         ("you", "hi"),
-        ("system", "> /sessions list"),
+        ("system", "> /session list"),
         ("system", "1. 2026.../.."),
         ("ludvart", "hello"),
     ]
@@ -189,7 +190,7 @@ def test_a_test_run_never_writes_to_the_real_session_store():
 
     The e2e scripts fork a real ludvart, which persists its conversation, so a
     single suite run dropped dozens of throwaway sessions into the developer's
-    store and /sessions listed them next to actual work.
+    store and /session listed them next to actual work.
     """
     import os
 
@@ -487,27 +488,27 @@ def test_openai_custom_same_family_roundtrip():
 
 def test_complete_slash():
     # command-name completion (unique -> trailing space)
-    assert complete_slash("/sess") == "/sessions "
-    assert complete_slash("/s") == "/sessions "
+    assert complete_slash("/sess") == "/session "
+    assert complete_slash("/s") == "/session "
     assert complete_slash("/i") == "/init_helpers "
     assert complete_slash("/init") == "/init_helpers "
-    # ambiguous at the root ("init_helpers" vs "sessions" share no prefix) -> None
+    # ambiguous at the root ("init_helpers" vs "session" share no prefix) -> None
     assert complete_slash("/") is None
     # already complete command name -> add trailing space
-    assert complete_slash("/sessions") == "/sessions "
+    assert complete_slash("/session") == "/session "
     # subcommand completion
-    assert complete_slash("/sessions li") == "/sessions list "
-    assert complete_slash("/sessions lo") == "/sessions load "
-    assert complete_slash("/sessions n") == "/sessions new "
+    assert complete_slash("/session li") == "/session list "
+    assert complete_slash("/session lo") == "/session load "
+    assert complete_slash("/session n") == "/session new "
     # ambiguous subcommand prefix "l" -> common prefix is "l" (== word) -> None
-    assert complete_slash("/sessions l") is None
+    assert complete_slash("/session l") is None
     # a command with no subcommands does not complete its argument
     assert complete_slash("/init_helpers ") is None
     # no completion possible
     assert complete_slash("/xyz") is None
-    assert complete_slash("/sessions bogus") is None
+    assert complete_slash("/session bogus") is None
     # arguments are not completed
-    assert complete_slash("/sessions load 3") is None
+    assert complete_slash("/session load 3") is None
     # non-slash input
     assert complete_slash("hello") is None
     print("complete_slash: OK")
@@ -615,15 +616,32 @@ def test_complete_slash_mcp_commands():
 
 
 def test_complete_slash_rename():
-    assert complete_slash("/sessions r") == "/sessions rename "
+    assert complete_slash("/session r") == "/session rename "
     # 'l' is still ambiguous (list/load), 'n' completes to new.
-    assert complete_slash("/sessions n") == "/sessions new "
-    print("complete_slash completes /sessions rename: OK")
+    assert complete_slash("/session n") == "/session new "
+    print("complete_slash completes /session rename: OK")
 
 
 def test_complete_slash_fork():
-    assert complete_slash("/sessions f") == "/sessions fork "
-    print("complete_slash completes /sessions fork: OK")
+    assert complete_slash("/session f") == "/session fork "
+    print("complete_slash completes /session fork: OK")
+
+
+def test_slash_candidates():
+    """What Tab was choosing between, so an ambiguous Tab can show the options."""
+    # A command whose subcommand has not been started yet: all of them.
+    assert slash_candidates("/session ") == ["fork", "list", "load", "new", "rename"]
+    assert slash_candidates("/model ") == ["add", "list", "remove", "use"]
+    assert slash_candidates("/compact ") == ["last-turn"]
+    # A started but ambiguous subcommand: only the ones still reachable.
+    assert slash_candidates("/session l") == ["list", "load"]
+    # Command names, shown with their slash so they read as commands.
+    assert slash_candidates("/mcp_") == ["/mcp_auth", "/mcp_login", "/mcp_refresh"]
+    # Nothing to offer.
+    assert slash_candidates("/init_helpers ") == []
+    assert slash_candidates("/session load 3") == []
+    assert slash_candidates("hello") == []
+    print("slash_candidates lists the subcommands Tab can choose from: OK")
 
 
 def test_turn_numbers_pair_a_question_with_its_answer():
@@ -747,6 +765,7 @@ if __name__ == "__main__":
     test_complete_slash_rename()
     test_complete_slash_mcp_commands()
     test_complete_slash_fork()
+    test_slash_candidates()
     test_turn_numbers_pair_a_question_with_its_answer()
     test_turn_numbers_on_an_empty_transcript()
     test_fork_history_end_cuts_after_the_turns_answer()

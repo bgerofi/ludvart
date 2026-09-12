@@ -1,4 +1,4 @@
-"""Backend-side session persistence and /sessions command round-trips.
+"""Backend-side session persistence and /session command round-trips.
 
 Run:
     cd /local_home/bgerofi1/src/ludvart && source .venv/bin/activate \
@@ -138,11 +138,11 @@ def test_sessions_list_over_backend():
             provider="custom",
         )
         current = SessionStore.create_new()
-        host = _run_command("sessions list", current)
+        host = _run_command("session list", current)
         joined = "\n".join(host.systems)
         assert "old question" in joined, joined
         assert saved.session_id in joined, joined
-    print("/sessions list is served by the backend store: OK")
+    print("/session list is served by the backend store: OK")
 
 
 def test_sessions_list_sends_whole_titles_as_clippable_rows():
@@ -162,20 +162,20 @@ def test_sessions_list_sends_whole_titles_as_clippable_rows():
             [("you", "q")], [{"role": "user", "content": "q"}], provider="custom"
         )
         current = SessionStore.create_new()
-        host = _run_command("sessions list", current)
+        host = _run_command("session list", current)
         assert len(host.rows) == 1, host.rows
         assert long_title in host.rows[0], host.rows
         assert "..." not in host.rows[0], host.rows
-    print("/sessions list sends whole titles as clippable rows: OK")
+    print("/session list sends whole titles as clippable rows: OK")
 
 
 def test_sessions_new_over_backend():
     with _tmp_sessions():
         current = SessionStore.create_new()
-        host = _run_command("sessions new", current)
+        host = _run_command("session new", current)
         assert host.transcripts and host.transcripts[-1] == [], host.transcripts
         assert any("Started new session" in s for s in host.systems), host.systems
-    print("/sessions new clears the transcript on the client: OK")
+    print("/session new clears the transcript on the client: OK")
 
 
 def test_sessions_load_over_backend():
@@ -187,14 +187,14 @@ def test_sessions_load_over_backend():
             provider="custom",
         )
         current = SessionStore.create_new()
-        host = _run_command(f"sessions load {saved.session_id}", current)
+        host = _run_command(f"session load {saved.session_id}", current)
         assert host.transcripts, "load should push a transcript"
         assert host.transcripts[-1] == [
             ["you", "loaded q"],
             ["ludvart", "loaded a"],
         ], host.transcripts[-1]
         assert any("Loaded session" in s for s in host.systems), host.systems
-    print("/sessions load restores and pushes the transcript: OK")
+    print("/session load restores and pushes the transcript: OK")
 
 
 def test_sessions_load_by_index_over_backend():
@@ -218,8 +218,8 @@ def test_sessions_load_by_index_over_backend():
         client = BackendClient(client_ch)
         host = RecordingHost()
         assert client_ch.recv()["type"] == "hello"
-        client.command("sessions list", host)
-        client.command("sessions load 1", host)
+        client.command("session list", host)
+        client.command("session load 1", host)
         client_ch.close()
         t.join(timeout=2)
         backend_ch.close()
@@ -227,7 +227,7 @@ def test_sessions_load_by_index_over_backend():
             ["you", "indexed q"],
             ["ludvart", "indexed a"],
         ], host.transcripts[-1]
-    print("/sessions load <n> resolves the index on the backend: OK")
+    print("/session load <n> resolves the index on the backend: OK")
 
 
 def test_sessions_rename_over_backend():
@@ -242,12 +242,12 @@ def test_sessions_rename_over_backend():
         )
         sid = saved.session_id
         current = SessionStore.create_new()
-        host = _run_command(f'sessions rename {sid} "Renamed title"', current)
+        host = _run_command(f'session rename {sid} "Renamed title"', current)
 
         assert any("Renamed" in s for s in host.systems), host.systems
         # The title is persisted on the backend store.
         assert load_session(sid)["title"] == "Renamed title"
-    print("/sessions rename sets the title on the backend store: OK")
+    print("/session rename sets the title on the backend store: OK")
 
 
 def test_sessions_list_shows_title_over_backend():
@@ -260,12 +260,12 @@ def test_sessions_list_shows_title_over_backend():
             provider="custom",
         )
         current = SessionStore.create_new()
-        host = _run_command("sessions list", current)
+        host = _run_command("session list", current)
         joined = "\n".join(host.systems)
         assert "Nice title" in joined, joined
         # The title takes precedence over the message preview.
         assert "the first line preview" not in joined, joined
-    print("/sessions list shows the title instead of the preview: OK")
+    print("/session list shows the title instead of the preview: OK")
 
 
 def test_sessions_rename_by_index_and_unquoted_title():
@@ -292,8 +292,8 @@ def test_sessions_rename_by_index_and_unquoted_title():
         client = BackendClient(client_ch)
         host = RecordingHost()
         assert client_ch.recv()["type"] == "hello"
-        client.command("sessions list", host)
-        client.command("sessions rename 1 PythonSV-CDO TCP timeout issue", host)
+        client.command("session list", host)
+        client.command("session rename 1 PythonSV-CDO TCP timeout issue", host)
         client_ch.close()
         t.join(timeout=2)
         backend_ch.close()
@@ -303,7 +303,7 @@ def test_sessions_rename_by_index_and_unquoted_title():
             == "PythonSV-CDO TCP timeout issue"
         )
         assert any("Renamed" in s for s in host.systems), host.systems
-    print("/sessions rename <n> with an unquoted multi-word title: OK")
+    print("/session rename <n> with an unquoted multi-word title: OK")
 
 
 class _RecordingChannel:
@@ -359,7 +359,7 @@ def test_fork_branches_the_conversation_and_switches_to_it():
         kinds = [m.get("kind") for m in channel.sent]
         assert kinds == ["transcript", "session"], kinds
         assert channel.sent[1]["session_id"] == core.session.session_id
-    print("/sessions fork branches the conversation and switches to it: OK")
+    print("/session fork branches the conversation and switches to it: OK")
 
 
 def test_fork_rejects_a_turn_that_does_not_exist():
@@ -376,7 +376,7 @@ def test_fork_rejects_a_turn_that_does_not_exist():
         # A rejected fork must not disturb the conversation it was run from.
         assert core.session.session_id == before
         assert _questions(core.transcript) == ["question 1", "question 2"]
-    print("/sessions fork rejects a turn that does not exist: OK")
+    print("/session fork rejects a turn that does not exist: OK")
 
 
 def test_fork_over_the_backend_command_path():
@@ -393,7 +393,7 @@ def test_fork_over_the_backend_command_path():
         client = BackendClient(client_ch)
         host = RecordingHost()
         assert client_ch.recv()["type"] == "hello"
-        client.command("sessions fork 1", host)
+        client.command("session fork 1", host)
         client_ch.close()
         t.join(timeout=2)
         backend_ch.close()
@@ -404,7 +404,7 @@ def test_fork_over_the_backend_command_path():
         assert list_sessions() == [] or all(
             s["count"] == 0 for s in list_sessions()
         )
-    print("/sessions fork reaches the backend command dispatcher: OK")
+    print("/session fork reaches the backend command dispatcher: OK")
 
 
 def main():

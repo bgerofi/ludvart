@@ -147,7 +147,7 @@ class AiPanel:
     def add_system_row(self, text: str) -> None:
         """Add a system line that is clipped to the width instead of wrapped.
 
-        For tabular output such as ``/sessions list``, where one item per row is
+        For tabular output such as ``/session list``, where one item per row is
         what makes the list scannable and the tail of a long line is the least
         interesting part of it.
         """

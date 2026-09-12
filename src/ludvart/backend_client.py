@@ -133,7 +133,7 @@ class BackendReconnector:
         if not target:
             return
         notify(f"restoring session {target}...")
-        BackendClient(self.channel).command(f"sessions load {target}", host)
+        BackendClient(self.channel).command(f"session load {target}", host)
         # We are now on the restored session again.
         self.session_id = target
 
