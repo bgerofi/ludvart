@@ -31,11 +31,12 @@ from pathlib import Path
 
 import pytest
 
-from e2e_util import isolate_sessions
+from e2e_util import isolate_profiles, isolate_sessions
 
 # Applies to every test, not just the e2e ones: whatever a test saves must not
 # end up in the developer's real ~/.ludvart/sessions.
 isolate_sessions()
+isolate_profiles()
 
 
 #: Model the e2e suite asks for by default. These tests exercise ludvart's own
@@ -90,6 +91,18 @@ def _isolate_registry_env():
         os.environ.pop("LUDVART_MODELS_FILE", None)
     else:
         os.environ["LUDVART_MODELS_FILE"] = previous
+
+
+@pytest.fixture(autouse=True)
+def _isolate_profiles_env():
+    """Restore ``LUDVART_PROFILES_DIR`` after a test redirects it, as above."""
+    sentinel = object()
+    previous = os.environ.get("LUDVART_PROFILES_DIR", sentinel)
+    yield
+    if previous is sentinel:
+        os.environ.pop("LUDVART_PROFILES_DIR", None)
+    else:
+        os.environ["LUDVART_PROFILES_DIR"] = previous
 
 
 @pytest.fixture

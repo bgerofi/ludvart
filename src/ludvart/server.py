@@ -21,6 +21,7 @@ from typing import BinaryIO, Callable, Sequence
 
 from .agent_core import DEFAULT_CLIENT_TOOLS, AgentCore
 from .llm import LLMClient, ProviderConfig, ToolCall, ToolSpec, Turn
+from .profiles import ActiveProfile
 from .prompt import system_prompt
 from .protocol import (
     DEFAULT_MAX_FRAME,
@@ -233,6 +234,8 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
         result = _handle_model(parts[1:], manager, core, channel, emit, payload)
     elif cmd == "session":
         _handle_session(parts[1:], core, channel, emit)
+    elif cmd == "profile":
+        _handle_profile(parts[1:], core, channel, emit, payload)
     elif cmd == "compact":
         _do_compact(parts[1:], core, channel, emit)
     elif cmd == "mcp_refresh":
@@ -444,6 +447,119 @@ def _do_model_add(reg, manager, core, channel: FrameChannel, emit) -> None:
         _do_model_use(str(len(manager.models)), manager, core, channel, emit)
 
 
+def _handle_profile(args, core, channel: FrameChannel, emit, payload=None) -> None:
+    """Run ``/profile [list|use|add|delete]``: manage the agent's background.
+
+    The profiles live on the backend host, which is also where they are read
+    from on every request, so all of this is done here. The only part that runs
+    on the client is asking for the name during ``add``.
+    """
+    from .panel import format_tokens
+    from .profiles import (
+        LARGE_PROFILE_TOKENS,
+        add_profile,
+        estimate_tokens,
+        find_profile,
+        load_profiles,
+        profile_path,
+        read_profile_text,
+        remove_profile,
+        save_profiles,
+        set_active,
+    )
+
+    def row(text: str) -> None:
+        channel.send(message(MsgType.PANEL_UPDATE, kind="row", text=text))
+
+    def cost(filename: str) -> str:
+        """What this profile adds to every request, measured right now."""
+        path = profile_path(filename)
+        if path is None or not path.is_file():
+            return "file is missing"
+        tokens = estimate_tokens(read_profile_text(filename))
+        note = f"~{format_tokens(tokens)} tokens"
+        if tokens >= LARGE_PROFILE_TOKENS:
+            note += "  -- large, consider compacting it"
+        return note
+
+    sub = args[0] if args else "list"
+    profiles = load_profiles()
+    if sub == "list":
+        if not profiles:
+            emit("No profiles registered. Add one with /profile add <file.md>.")
+            return
+        width = len(str(len(profiles)))
+        name_w = max(len(p["name"]) for p in profiles)
+        for i, p in enumerate(profiles, 1):
+            marker = "*" if p.get("active") else " "
+            row(f"{marker}{str(i).rjust(width)}. {p['name'].ljust(name_w)}  "
+                f"({p['file']})  {cost(p['file'])}")
+        emit("Use /profile use <n>|<name>|none, add <file.md>, "
+             "or delete <n>|<name>.")
+    elif sub == "use":
+        if len(args) < 2:
+            emit("Usage: /profile use <n>|<name>|none")
+            return
+        token = args[1]
+        if token.lower() == "none":
+            save_profiles(set_active(profiles, None))
+            emit("No profile in use.")
+            return
+        idx = find_profile(profiles, token)
+        if idx is None:
+            emit(f"No profile matches {token!r}. See /profile list.")
+            return
+        save_profiles(set_active(profiles, idx))
+        entry = profiles[idx]
+        path = profile_path(entry["file"])
+        if path is None or not path.is_file():
+            emit(f"Now using profile {entry['name']}, but {entry['file']} is "
+                 "missing: requests go out without it until it is back.")
+        else:
+            emit(f"Now using profile {entry['name']} ({entry['file']}, "
+                 f"{cost(entry['file'])}).")
+    elif sub == "add":
+        entry = payload if isinstance(payload, dict) else None
+        if not entry:
+            emit("Profile add is started from the client's guided prompts.")
+            return
+        name = str(entry.get("name", "")).strip()
+        filename = str(entry.get("file", "")).strip()
+        path = profile_path(filename)
+        if path is None:
+            emit(f"Not a profile filename: {filename!r} "
+                 "(expected a *.md file in ~/.ludvart/profiles/).")
+            return
+        if not path.is_file():
+            emit(f"No such profile file on the backend host: {path}")
+            return
+        if not read_profile_text(filename).strip():
+            emit(f"Profile file is unreadable or empty: {path}")
+            return
+        try:
+            profiles = add_profile(profiles, name, filename)
+        except ValueError as exc:
+            emit(str(exc))
+            return
+        save_profiles(profiles)
+        emit(f"Registered profile {name} ({filename}, {cost(filename)}). "
+             f"Start using it with /profile use {len(profiles)}.")
+    elif sub == "delete":
+        if len(args) < 2:
+            emit("Usage: /profile delete <n>|<name>")
+            return
+        idx = find_profile(profiles, args[1])
+        if idx is None:
+            emit(f"No profile matches {args[1]!r}. See /profile list.")
+            return
+        entry = profiles[idx]
+        save_profiles(remove_profile(profiles, idx))
+        emit(f"Deleted profile {entry['name']}. "
+             f"The file {entry['file']} was left in ~/.ludvart/profiles/.")
+    else:
+        emit(f"Unknown subcommand: /profile {sub}")
+
+
 def _handle_session(args, core, channel: FrameChannel, emit) -> None:
     from .session import (
         SessionStore,
@@ -536,6 +652,43 @@ def _handle_session(args, core, channel: FrameChannel, emit) -> None:
         emit(f"Unknown subcommand: /session {sub}")
 
 
+def _restore_session_profile(name: str, emit) -> None:
+    """Put back the agent profile a loaded session was held under.
+
+    Sessions predating profiles carry no name and are left alone. A name that is
+    no longer registered, or whose file has gone, is reported rather than
+    silently resuming the conversation against different background.
+    """
+    name = (name or "").strip()
+    if not name:
+        return
+    from .profiles import (
+        active_profile,
+        find_profile,
+        load_profiles,
+        profile_path,
+        save_profiles,
+        set_active,
+    )
+
+    profiles = load_profiles()
+    current = active_profile(profiles)
+    if current is not None and current["name"] == name:
+        return
+    idx = find_profile(profiles, name)
+    if idx is None:
+        emit(f"Session was held under profile {name}, which is not registered "
+             "here; leaving the current profile in place.")
+        return
+    path = profile_path(profiles[idx]["file"])
+    if path is None or not path.is_file():
+        emit(f"Session was held under profile {name}, whose file is missing; "
+             "leaving the current profile in place.")
+        return
+    save_profiles(set_active(profiles, idx))
+    emit(f"Switched to the session's profile {name} ({profiles[idx]['file']}).")
+
+
 def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:
     from .session import (
         SessionStore,
@@ -573,6 +726,7 @@ def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:
     )
     core.session = SessionStore.open_existing(session_id)
     core.session.title = data.get("title", "") or ""
+    _restore_session_profile(data.get("profile", ""), emit)
     channel.send(
         message(
             MsgType.PANEL_UPDATE,
@@ -822,6 +976,7 @@ def serve(
         client_tools=DEFAULT_CLIENT_TOOLS,
         session=session,
         mcp=mcp,
+        profile=ActiveProfile(),
     )
     # The client owns no model, so lend it the active one for the one-shot
     # calls it makes while serving our requests (the settle detector).

@@ -33,6 +33,13 @@ TEST_SESSIONS_DIR = os.path.join(
     "ludvart-test-sessions" + (f"-{_WORKER}" if _WORKER else ""),
 )
 
+#: Same idea for agent profiles: a test that registers one must not land it in
+#: the developer's real ~/.ludvart/profiles.
+TEST_PROFILES_DIR = os.path.join(
+    tempfile.gettempdir(),
+    "ludvart-test-profiles" + (f"-{_WORKER}" if _WORKER else ""),
+)
+
 
 def isolate_sessions() -> str:
     """Point session storage at the throwaway root and return it.
@@ -46,7 +53,15 @@ def isolate_sessions() -> str:
     return root
 
 
+def isolate_profiles() -> str:
+    """Point profile storage at the throwaway root and return it."""
+    root = os.environ.setdefault("LUDVART_PROFILES_DIR", TEST_PROFILES_DIR)
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
 isolate_sessions()
+isolate_profiles()
 
 
 def e2e_backend() -> str:

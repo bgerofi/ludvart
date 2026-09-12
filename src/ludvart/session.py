@@ -224,6 +224,7 @@ class SessionStore:
         provider: str | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        profile: str = "",
     ) -> None:
         """Atomically (re)write the conversation file with the current state.
 
@@ -235,6 +236,10 @@ class SessionStore:
         ``input_tokens``/``output_tokens`` are the conversation's cumulative
         billed totals. They belong to the session rather than to any model, so
         they survive a ``/model use`` mid-conversation.
+
+        ``profile`` is the name of the agent profile the conversation was held
+        under, so resuming it can put that background back in place. Sessions
+        written before profiles existed simply have no such name.
         """
         self.dir.mkdir(parents=True, exist_ok=True)
         data = {
@@ -244,6 +249,7 @@ class SessionStore:
             "updated_at": _iso(_utc_now()),
             "provider": provider,
             "title": getattr(self, "title", "") or "",
+            "profile": profile or "",
             "tokens": {"input": int(input_tokens), "output": int(output_tokens)},
             "messages": [list(m) for m in persisted_messages(messages)],
             "llm_history": llm_history,
@@ -547,6 +553,7 @@ SLASH_COMMANDS: dict[str, list[str]] = {
     "mcp_refresh": [],
     "model": ["add", "list", "remove", "use"],
     "perf": ["dump", "summary"],
+    "profile": ["add", "delete", "list", "use"],
     "revoke_approval": [],
     "session": ["delete", "fork", "list", "load", "new", "rename"],
 }
@@ -598,6 +605,19 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
     ("/model add", "Register a new model endpoint (guided prompts, then verify)."),
     ("/model use <n>|<model>", "Switch to another registered, available model."),
     ("/model remove <n>|<model>", "Unregister a model (not the one in use)."),
+    (
+        "/profile list",
+        "List agent profiles with their file and what they cost per request.",
+    ),
+    (
+        "/profile use <n>|<name>|none",
+        "Put a profile's background in front of every request ('none' clears).",
+    ),
+    (
+        "/profile add <file.md>",
+        "Register a markdown file from ~/.ludvart/profiles/ (asks for a name).",
+    ),
+    ("/profile delete <n>|<name>", "Unregister a profile (the .md file is kept)."),
     (
         "/perf summary",
         "Report min/avg/max timing per operation type (LLM requests, tool "

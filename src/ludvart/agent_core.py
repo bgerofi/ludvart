@@ -108,6 +108,7 @@ class AgentCore:
         max_tokens: int = 8192,
         session=None,
         mcp=None,
+        profile=None,
     ) -> None:
         self.llm = llm
         self.host = host
@@ -117,6 +118,8 @@ class AgentCore:
         self.max_tokens = max_tokens
         #: External MCP servers discovered on this host (None when unused).
         self.mcp = mcp
+        #: The active agent profile, re-read per request (None disables them).
+        self.profile = profile
         #: Scratch space for tools that write files (e.g. ``fetch_url``).
         self.scratch = builtin.ScratchDir()
         #: The running provider-neutral conversation log.
@@ -144,6 +147,18 @@ class AgentCore:
     def _raise_if_cancelled(self) -> None:
         if self.cancel.is_set():
             raise TurnCancelled()
+
+    def _system_message(self) -> dict:
+        """The system turn for one request, with the profile read fresh.
+
+        Built per request rather than per turn so that editing the profile file,
+        or switching profiles, is felt by the very next request instead of the
+        next conversation.
+        """
+        content = self.system_prompt
+        if self.profile is not None:
+            content += self.profile.section()
+        return {"role": "system", "content": content}
 
     def run_turn(self, question: str, snapshot: str) -> str:
         """Run one user turn to completion and return the assistant's reply.
@@ -173,7 +188,6 @@ class AgentCore:
         self.history.append({"role": "user", "content": user_content})
         # Where this turn starts, so a mid-loop compaction can carry it over.
         checkpoint = len(self.history) - 1
-        system = {"role": "system", "content": self.system_prompt}
 
         # Running narration for this ask. Streamed commentary and one note per
         # tool call accumulate here so the transient interim line keeps showing
@@ -221,7 +235,7 @@ class AgentCore:
                 # never notice it at all.
                 self._raise_if_cancelled()
                 turn = self.llm.converse(
-                    [system, *self._build_context()],
+                    [self._system_message(), *self._build_context()],
                     tools=self.tools or None,
                     max_tokens=self.max_tokens,
                     on_text=on_text,
@@ -432,6 +446,7 @@ class AgentCore:
                 provider=getattr(self.llm, "name", None),
                 input_tokens=self.total_input_tokens,
                 output_tokens=self.total_output_tokens,
+                profile=self.profile.name() if self.profile is not None else "",
             )
         except Exception:  # noqa: BLE001 - persistence must never break a turn
             pass

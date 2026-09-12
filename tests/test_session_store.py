@@ -679,6 +679,31 @@ def test_complete_slash_fork():
     print("complete_slash completes /session fork: OK")
 
 
+def test_complete_slash_profile():
+    assert complete_slash("/pro") == "/profile "
+    assert complete_slash("/profile u") == "/profile use "
+    assert complete_slash("/profile a") == "/profile add "
+    assert complete_slash("/profile de") == "/profile delete "
+    assert complete_slash("/profile li") == "/profile list "
+    # 'd' is still ambiguous (delete only here, so it completes).
+    assert complete_slash("/profile bogus") is None
+    print("complete_slash completes the /profile subcommands: OK")
+
+
+def test_save_persists_the_active_profile():
+    root = Path(tempfile.mkdtemp())
+    store = SessionStore(
+        root=root, started_at=datetime(2026, 7, 2, 8, 5, 9, tzinfo=timezone.utc)
+    )
+    store.save([("you", "hi")], [], profile="investigator")
+    data = json.loads(store.path.read_text())
+    assert data["profile"] == "investigator", data
+    # No profile in use is stored as an empty string, not left out.
+    store.save([("you", "hi")], [])
+    assert json.loads(store.path.read_text())["profile"] == ""
+    print("save persists the profile the conversation ran under: OK")
+
+
 def test_slash_candidates():
     """What Tab was choosing between, so an ambiguous Tab can show the options."""
     # A command whose subcommand has not been started yet: all of them.
@@ -686,6 +711,7 @@ def test_slash_candidates():
         "delete", "fork", "list", "load", "new", "rename",
     ]
     assert slash_candidates("/model ") == ["add", "list", "remove", "use"]
+    assert slash_candidates("/profile ") == ["add", "delete", "list", "use"]
     assert slash_candidates("/compact ") == ["last-turn"]
     # A started but ambiguous subcommand: only the ones still reachable.
     assert slash_candidates("/session l") == ["list", "load"]
@@ -822,6 +848,8 @@ if __name__ == "__main__":
     test_complete_slash_rename()
     test_complete_slash_mcp_commands()
     test_complete_slash_fork()
+    test_complete_slash_profile()
+    test_save_persists_the_active_profile()
     test_slash_candidates()
     test_turn_numbers_pair_a_question_with_its_answer()
     test_turn_numbers_on_an_empty_transcript()

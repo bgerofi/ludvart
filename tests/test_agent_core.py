@@ -1206,6 +1206,91 @@ def test_a_dangling_tool_call_is_never_sent():
     print("a dangling tool call is never sent: OK")
 
 
+class _FakeProfile:
+    """Stands in for ActiveProfile: whatever ``text`` says at the time."""
+
+    def __init__(self, text=""):
+        self.text = text
+        self.reads = 0
+
+    def name(self):
+        return "fake" if self.text else ""
+
+    def section(self):
+        self.reads += 1
+        return self.text
+
+
+def test_no_profile_leaves_the_system_prompt_alone():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("ok")])
+    core = AgentCore(llm, host, system_prompt="SYS")
+    core.run_turn("q", "SCREEN")
+    assert llm.seen_messages[-1][0] == {"role": "system", "content": "SYS"}
+    print("no profile leaves the system prompt untouched: OK")
+
+
+def test_the_profile_rides_in_the_system_prompt():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("ok")])
+    core = AgentCore(
+        llm, host, system_prompt="SYS", profile=_FakeProfile("\n\nBACKGROUND")
+    )
+    core.run_turn("q", "SCREEN")
+    system = llm.seen_messages[-1][0]
+    assert system["role"] == "system"
+    assert system["content"] == "SYS\n\nBACKGROUND", system
+    print("the active profile rides in the system prompt: OK")
+
+
+def test_the_profile_is_re_read_for_every_request():
+    """Editing the profile mid-conversation is felt by the next request."""
+    host = RecordingHost()
+    call = ToolCall(id="c1", name="inject_input", input={"text": "x"})
+    llm = ScriptedLLM([_tool_turn("", call), _text_turn("done")])
+    profile = _FakeProfile("\n\nFIRST")
+    core = AgentCore(
+        llm, host, system_prompt="SYS", tools=[_tool("inject_input")],
+        profile=profile,
+    )
+
+    original_tool = host.run_terminal_tool
+
+    def _edit_profile_then_run(name, args):
+        profile.text = "\n\nSECOND"
+        return original_tool(name, args)
+
+    host.run_terminal_tool = _edit_profile_then_run
+    core.run_turn("q", "SCREEN")
+
+    # Two requests in one turn: the second already carries the edited text.
+    assert llm.seen_messages[0][0]["content"] == "SYS\n\nFIRST"
+    assert llm.seen_messages[1][0]["content"] == "SYS\n\nSECOND"
+    print("the profile is re-read for every request: OK")
+
+
+def test_the_profile_name_is_saved_with_the_session():
+    import tempfile
+    from pathlib import Path
+
+    from ludvart.session import SessionStore, load_session
+
+    root = Path(tempfile.mkdtemp())
+    host = RecordingHost()
+    core = AgentCore(
+        ScriptedLLM([_text_turn("a")]),
+        host,
+        system_prompt="SYS",
+        session=SessionStore(root=root),
+        profile=_FakeProfile("\n\nBACKGROUND"),
+    )
+    core.run_turn("q", "SCREEN")
+
+    data = load_session(core.session.session_id, root=root)
+    assert data["profile"] == "fake", data
+    print("the profile name is saved with the session: OK")
+
+
 def main():
     test_plain_answer_turn()
     test_client_tool_routes_through_host()
@@ -1214,7 +1299,7 @@ def main():
     test_unknown_backend_tool_reports_gracefully()
     test_transcript_accumulates_for_persistence()
     test_neutral_helpers()
-    test_reminder_appended_to_last_user_turn_only()
+    test_reminder_rides_in_the_trailing_block()
     test_reminder_names_the_helper_path()
     test_reminder_not_stored_in_history()
     test_reminder_does_not_accumulate_across_turns()
@@ -1260,6 +1345,10 @@ def main():
     test_a_cancel_stops_before_the_next_tool_runs()
     test_a_later_turn_after_a_failure_is_well_formed()
     test_a_dangling_tool_call_is_never_sent()
+    test_no_profile_leaves_the_system_prompt_alone()
+    test_the_profile_rides_in_the_system_prompt()
+    test_the_profile_is_re_read_for_every_request()
+    test_the_profile_name_is_saved_with_the_session()
     print("\nALL agent core tests passed.")
 
 

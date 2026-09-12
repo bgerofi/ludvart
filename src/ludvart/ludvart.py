@@ -66,7 +66,8 @@ DEFAULT_PREFIX = b"\x07"  # Ctrl-G
 #: to the backend instead of handling them itself. Everything else -- helper
 #: installation, perf timings, approval -- is genuinely client-side.
 _BACKEND_COMMANDS = frozenset(
-    {"model", "session", "compact", "mcp_refresh", "mcp_login", "mcp_auth"}
+    {"model", "session", "profile", "compact", "mcp_refresh", "mcp_login",
+     "mcp_auth"}
 )
 
 # In addition to the prefix commands, a single dedicated "summon" key opens the
@@ -403,6 +404,8 @@ class Ludvart:
         self._backend_needs_setup = bool(backend_needs_setup)
         # Guided ``/model add`` input flow state (None unless collecting fields).
         self._model_add: dict | None = None
+        # A ``/profile add`` waiting for the name to register the file under.
+        self._profile_add: dict | None = None
         self._child_pid: int = -1
         self._master_fd: int = -1
         self._stdin_fd = sys.stdin.fileno()
@@ -1494,6 +1497,9 @@ class Ludvart:
         if self._model_add is not None:
             self._feed_model_add(question)
             return
+        if self._profile_add is not None:
+            self._feed_profile_add(question)
+            return
         if not question:
             return
         if question.startswith("/"):
@@ -1536,13 +1542,15 @@ class Ludvart:
         args = parts[1:]
         # The conversation, the model registry, the sessions and the MCP servers
         # all live on the backend, so those commands are forwarded there.
-        # ``/model add`` is the exception: its guided prompts run locally (on the
-        # panel) and only the finished registration is sent over to be verified.
+        # ``/model add`` and ``/profile add`` are the exceptions: their prompts
+        # run locally (on the panel) and only the finished answer is sent over.
         if cmd in _BACKEND_COMMANDS:
             if self._backend_client is None:
                 panel.add_system(f"/{cmd} needs an agent backend (not in --no-llm).")
             elif cmd == "model" and (args[0] if args else "list") == "add":
                 self._model_add_start()
+            elif cmd == "profile" and (args[0] if args else "list") == "add":
+                self._profile_add_start(args[1:])
             else:
                 self._forward_command_to_backend(line[1:])
             self._render_split()
@@ -1767,6 +1775,43 @@ class Ludvart:
 
 
 
+
+    # -- /profile: agent background -----------------------------------------
+
+    def _profile_add_start(self, args: list[str]) -> None:
+        """Begin ``/profile add <file.md>``: ask what to call the profile.
+
+        Only the name is collected here; the file itself lives on the backend
+        host, so that is where it is checked and registered.
+        """
+        panel = self._panel
+        if panel is None or self._backend_client is None:
+            return
+        if not args:
+            panel.add_system(
+                "Usage: /profile add <file.md> (a file in ~/.ludvart/profiles/)"
+            )
+            self._render_split()
+            return
+        self._profile_add = {"file": args[0]}
+        panel.add_system(f"Name for {args[0]} (or 'cancel'):")
+        self._render_split()
+
+    def _feed_profile_add(self, line: str) -> None:
+        """Finish ``/profile add`` with the typed name."""
+        panel = self._panel
+        if panel is None or self._profile_add is None:
+            return
+        pending, self._profile_add = self._profile_add, None
+        name = line.strip()
+        if not name or name.lower() == "cancel":
+            panel.add_system("Profile add cancelled.")
+            self._render_split()
+            return
+        self._forward_command_to_backend(
+            "profile add", payload={"name": name, "file": pending["file"]}
+        )
+        self._render_split()
 
     # -- /model: multi-model registry ---------------------------------------
 
