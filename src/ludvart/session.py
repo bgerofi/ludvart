@@ -607,17 +607,18 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
     ("/model remove <n>|<model>", "Unregister a model (not the one in use)."),
     (
         "/profile list",
-        "List agent profiles with their file and what they cost per request.",
+        "List agent profiles with their folder and what they cost per request.",
     ),
     (
         "/profile use <n>|<name>|none",
         "Put a profile's background in front of every request ('none' clears).",
     ),
     (
-        "/profile add <file.md>",
-        "Register a markdown file from ~/.ludvart/profiles/ (asks for a name).",
+        "/profile add <folder>",
+        "Register a ~/.ludvart/profiles/ folder holding self.md (asks for a "
+        "name).",
     ),
-    ("/profile delete <n>|<name>", "Unregister a profile (the .md file is kept)."),
+    ("/profile delete <n>|<name>", "Unregister a profile (the folder is kept)."),
     (
         "/perf summary",
         "Report min/avg/max timing per operation type (LLM requests, tool "

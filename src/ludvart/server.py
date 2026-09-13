@@ -457,27 +457,33 @@ def _handle_profile(args, core, channel: FrameChannel, emit, payload=None) -> No
     from .panel import format_tokens
     from .profiles import (
         LARGE_PROFILE_TOKENS,
+        MEMORY_NAME,
+        SELF_NAME,
         add_profile,
-        estimate_tokens,
         find_profile,
         load_profiles,
-        profile_path,
+        memory_path,
+        profile_tokens,
         read_profile_text,
         remove_profile,
         save_profiles,
+        self_path,
         set_active,
     )
 
     def row(text: str) -> None:
         channel.send(message(MsgType.PANEL_UPDATE, kind="row", text=text))
 
-    def cost(filename: str) -> str:
+    def cost(dirname: str) -> str:
         """What this profile adds to every request, measured right now."""
-        path = profile_path(filename)
-        if path is None or not path.is_file():
-            return "file is missing"
-        tokens = estimate_tokens(read_profile_text(filename))
+        briefing = self_path(dirname)
+        if briefing is None or not briefing.is_file():
+            return f"{SELF_NAME} is missing"
+        tokens = profile_tokens(dirname)
         note = f"~{format_tokens(tokens)} tokens"
+        memory = memory_path(dirname)
+        if memory is not None and memory.is_file():
+            note += f" incl. {MEMORY_NAME}"
         if tokens >= LARGE_PROFILE_TOKENS:
             note += "  -- large, consider compacting it"
         return note
@@ -486,15 +492,15 @@ def _handle_profile(args, core, channel: FrameChannel, emit, payload=None) -> No
     profiles = load_profiles()
     if sub == "list":
         if not profiles:
-            emit("No profiles registered. Add one with /profile add <file.md>.")
+            emit("No profiles registered. Add one with /profile add <folder>.")
             return
         width = len(str(len(profiles)))
         name_w = max(len(p["name"]) for p in profiles)
         for i, p in enumerate(profiles, 1):
             marker = "*" if p.get("active") else " "
             row(f"{marker}{str(i).rjust(width)}. {p['name'].ljust(name_w)}  "
-                f"({p['file']})  {cost(p['file'])}")
-        emit("Use /profile use <n>|<name>|none, add <file.md>, "
+                f"({p['dir']}/)  {cost(p['dir'])}")
+        emit("Use /profile use <n>|<name>|none, add <folder>, "
              "or delete <n>|<name>.")
     elif sub == "use":
         if len(args) < 2:
@@ -511,38 +517,38 @@ def _handle_profile(args, core, channel: FrameChannel, emit, payload=None) -> No
             return
         save_profiles(set_active(profiles, idx))
         entry = profiles[idx]
-        path = profile_path(entry["file"])
-        if path is None or not path.is_file():
-            emit(f"Now using profile {entry['name']}, but {entry['file']} is "
+        briefing = self_path(entry["dir"])
+        if briefing is None or not briefing.is_file():
+            emit(f"Now using profile {entry['name']}, but {briefing} is "
                  "missing: requests go out without it until it is back.")
         else:
-            emit(f"Now using profile {entry['name']} ({entry['file']}, "
-                 f"{cost(entry['file'])}).")
+            emit(f"Now using profile {entry['name']} ({entry['dir']}/, "
+                 f"{cost(entry['dir'])}).")
     elif sub == "add":
         entry = payload if isinstance(payload, dict) else None
         if not entry:
             emit("Profile add is started from the client's guided prompts.")
             return
         name = str(entry.get("name", "")).strip()
-        filename = str(entry.get("file", "")).strip()
-        path = profile_path(filename)
-        if path is None:
-            emit(f"Not a profile filename: {filename!r} "
-                 "(expected a *.md file in ~/.ludvart/profiles/).")
+        dirname = str(entry.get("dir", "")).strip()
+        briefing = self_path(dirname)
+        if briefing is None:
+            emit(f"Not a profile directory: {dirname!r} "
+                 "(expected a folder in ~/.ludvart/profiles/).")
             return
-        if not path.is_file():
-            emit(f"No such profile file on the backend host: {path}")
+        if not briefing.is_file():
+            emit(f"No such profile briefing on the backend host: {briefing}")
             return
-        if not read_profile_text(filename).strip():
-            emit(f"Profile file is unreadable or empty: {path}")
+        if not read_profile_text(dirname).strip():
+            emit(f"Profile briefing is unreadable or empty: {briefing}")
             return
         try:
-            profiles = add_profile(profiles, name, filename)
+            profiles = add_profile(profiles, name, dirname)
         except ValueError as exc:
             emit(str(exc))
             return
         save_profiles(profiles)
-        emit(f"Registered profile {name} ({filename}, {cost(filename)}). "
+        emit(f"Registered profile {name} ({dirname}/, {cost(dirname)}). "
              f"Start using it with /profile use {len(profiles)}.")
     elif sub == "delete":
         if len(args) < 2:
@@ -555,7 +561,7 @@ def _handle_profile(args, core, channel: FrameChannel, emit, payload=None) -> No
         entry = profiles[idx]
         save_profiles(remove_profile(profiles, idx))
         emit(f"Deleted profile {entry['name']}. "
-             f"The file {entry['file']} was left in ~/.ludvart/profiles/.")
+             f"The folder {entry['dir']}/ was left in ~/.ludvart/profiles/.")
     else:
         emit(f"Unknown subcommand: /profile {sub}")
 
@@ -656,7 +662,7 @@ def _restore_session_profile(name: str, emit) -> None:
     """Put back the agent profile a loaded session was held under.
 
     Sessions predating profiles carry no name and are left alone. A name that is
-    no longer registered, or whose file has gone, is reported rather than
+    no longer registered, or whose briefing has gone, is reported rather than
     silently resuming the conversation against different background.
     """
     name = (name or "").strip()
@@ -666,8 +672,8 @@ def _restore_session_profile(name: str, emit) -> None:
         active_profile,
         find_profile,
         load_profiles,
-        profile_path,
         save_profiles,
+        self_path,
         set_active,
     )
 
@@ -680,13 +686,13 @@ def _restore_session_profile(name: str, emit) -> None:
         emit(f"Session was held under profile {name}, which is not registered "
              "here; leaving the current profile in place.")
         return
-    path = profile_path(profiles[idx]["file"])
-    if path is None or not path.is_file():
-        emit(f"Session was held under profile {name}, whose file is missing; "
-             "leaving the current profile in place.")
+    briefing = self_path(profiles[idx]["dir"])
+    if briefing is None or not briefing.is_file():
+        emit(f"Session was held under profile {name}, whose briefing is "
+             "missing; leaving the current profile in place.")
         return
     save_profiles(set_active(profiles, idx))
-    emit(f"Switched to the session's profile {name} ({profiles[idx]['file']}).")
+    emit(f"Switched to the session's profile {name} ({profiles[idx]['dir']}/).")
 
 
 def _do_session_load(ref: str, core, channel: FrameChannel, emit) -> None:

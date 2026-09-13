@@ -1,18 +1,27 @@
 """Agent profiles: background the model is given up front for a kind of work.
 
-A profile is a markdown file under ``~/.ludvart/profiles/`` describing the
-domain the agent is about to work in -- how to investigate a particular system,
-what the conventions are, where things live. The active profile's text is read
-fresh for every model request, so editing the file is felt immediately, in the
-middle of a running conversation.
+A profile is a directory under ``~/.ludvart/profiles/`` describing the domain
+the agent is about to work in. It holds two markdown files:
+
+* ``self.md`` -- the briefing: how to investigate a particular system, what the
+  conventions are, where things live. Written by the user, read for every
+  request, so editing it is felt immediately.
+* ``memory.md`` -- optional long-term memory: what the agent has learned and
+  wants to keep across conversations.
 
 Which profiles are registered, and which one is active, live in
 ``~/.ludvart/profiles/config.json``::
 
-    {"version": 1, "profiles": [{"name": "...", "file": "x.md", "active": true}]}
+    {"version": 1, "profiles": [{"name": "...", "dir": "xyz", "active": true}]}
 
 Unlike the model registry, "no profile" is a legal state: a profile is opt-in
 and can be switched off again.
+
+The two files go to different ends of the prompt on purpose. ``self.md`` is
+stable, so it is appended to the system prompt where a provider's cache can
+keep it. ``memory.md`` is written *during* conversations, so it rides in the
+trailing live block instead: changing it there costs nothing, whereas changing
+the system prompt would invalidate the cached prefix of the whole conversation.
 
 This module has no terminal/UI dependencies so it can be unit tested directly.
 """
@@ -28,10 +37,14 @@ from typing import Any
 CONFIG_NAME = "config.json"
 CONFIG_VERSION = 1
 
-#: A profile file is a bare markdown filename inside the profiles directory.
-#: Anything with a path separator, a ``..`` or another suffix is refused, so a
-#: registration can never name a file outside the directory.
-_FILENAME_RE = re.compile(r"[^/\\]+\.md")
+#: The briefing, and the optional long-term memory, inside a profile directory.
+SELF_NAME = "self.md"
+MEMORY_NAME = "memory.md"
+
+#: A profile directory is a bare name inside the profiles directory. Anything
+#: with a path separator or a leading dot (which covers ``.`` and ``..``) is
+#: refused, so a registration can never name a directory outside it.
+_DIRNAME_RE = re.compile(r"[^/\\.][^/\\]*")
 
 #: Rough characters-per-token, the same estimate the compaction trigger uses.
 #: Good enough to tell a 2k profile from a 200k one, which is what it is for.
@@ -45,7 +58,7 @@ Profile = dict[str, Any]
 
 
 def profiles_dir() -> Path:
-    """Directory holding the profile files and their config.
+    """Directory holding the profile directories and their config.
 
     Honours ``LUDVART_PROFILES_DIR`` (used by tests) and otherwise defaults to
     ``~/.ludvart/profiles``.
@@ -61,16 +74,28 @@ def config_path() -> Path:
     return profiles_dir() / CONFIG_NAME
 
 
-def valid_filename(filename: str) -> bool:
-    """Whether ``filename`` is a bare ``*.md`` name inside the profiles dir."""
-    return bool(filename) and bool(_FILENAME_RE.fullmatch(filename))
+def valid_dirname(dirname: str) -> bool:
+    """Whether ``dirname`` names a directory directly inside the profiles dir."""
+    return bool(dirname) and bool(_DIRNAME_RE.fullmatch(dirname))
 
 
-def profile_path(filename: str) -> Path | None:
-    """Resolve a profile filename to its path, or ``None`` if it is not one."""
-    if not valid_filename(filename):
+def profile_dir(dirname: str) -> Path | None:
+    """Resolve a profile directory name, or ``None`` if it is not one."""
+    if not valid_dirname(dirname):
         return None
-    return profiles_dir() / filename
+    return profiles_dir() / dirname
+
+
+def self_path(dirname: str) -> Path | None:
+    """Path of a profile's briefing file, or ``None`` for a bad directory."""
+    root = profile_dir(dirname)
+    return None if root is None else root / SELF_NAME
+
+
+def memory_path(dirname: str) -> Path | None:
+    """Path of a profile's memory file, or ``None`` for a bad directory."""
+    root = profile_dir(dirname)
+    return None if root is None else root / MEMORY_NAME
 
 
 def _coerce(raw: Any) -> Profile | None:
@@ -78,10 +103,10 @@ def _coerce(raw: Any) -> Profile | None:
     if not isinstance(raw, dict):
         return None
     name = str(raw.get("name") or "").strip()
-    filename = str(raw.get("file") or "").strip()
-    if not name or not valid_filename(filename):
+    dirname = str(raw.get("dir") or "").strip()
+    if not name or not valid_dirname(dirname):
         return None
-    return {"name": name, "file": filename, "active": bool(raw.get("active"))}
+    return {"name": name, "dir": dirname, "active": bool(raw.get("active"))}
 
 
 def _normalize(profiles: list[Profile]) -> list[Profile]:
@@ -133,25 +158,25 @@ def find_profile(profiles: list[Profile], token: str) -> int | None:
     return None
 
 
-def add_profile(profiles: list[Profile], name: str, filename: str) -> list[Profile]:
+def add_profile(profiles: list[Profile], name: str, dirname: str) -> list[Profile]:
     """Return ``profiles`` plus a new, inactive entry.
 
-    Raises ``ValueError`` for a bad name/filename or a name already in use.
+    Raises ``ValueError`` for a bad name/directory or a name already in use.
     """
     name = (name or "").strip()
     if not name:
         raise ValueError("a profile needs a name")
-    if not valid_filename(filename):
-        raise ValueError(f"not a profile filename: {filename!r}")
+    if not valid_dirname(dirname):
+        raise ValueError(f"not a profile directory: {dirname!r}")
     if any(p["name"] == name for p in profiles):
         raise ValueError(f"a profile named {name!r} already exists")
     out = [dict(p) for p in profiles]
-    out.append({"name": name, "file": filename, "active": False})
+    out.append({"name": name, "dir": dirname, "active": False})
     return out
 
 
 def remove_profile(profiles: list[Profile], index: int) -> list[Profile]:
-    """Return ``profiles`` without entry ``index`` (the file is left on disk)."""
+    """Return ``profiles`` without entry ``index`` (the files stay on disk)."""
     if not 0 <= index < len(profiles):
         raise IndexError(index)
     out = [dict(p) for p in profiles]
@@ -174,14 +199,13 @@ def active_profile(profiles: list[Profile]) -> Profile | None:
     return next((p for p in profiles if p.get("active")), None)
 
 
-def read_profile_text(filename: str) -> str:
-    """Return a profile file's content, or ``""`` if it cannot be read.
+def _read(path: Path | None) -> str:
+    """Read a profile file, or ``""`` if it is absent or unreadable.
 
     Deliberately uncapped: a profile is the user's own context budget to spend,
     and silently truncating it would give the model a half-read briefing. The
     listing reports the cost instead (see :func:`estimate_tokens`).
     """
-    path = profile_path(filename)
     if path is None:
         return ""
     try:
@@ -190,35 +214,71 @@ def read_profile_text(filename: str) -> str:
         return ""
 
 
+def read_profile_text(dirname: str) -> str:
+    """Return a profile's ``self.md``, or ``""`` if it cannot be read."""
+    return _read(self_path(dirname))
+
+
+def read_memory_text(dirname: str) -> str:
+    """Return a profile's ``memory.md``, or ``""`` when it does not exist."""
+    return _read(memory_path(dirname))
+
+
 def estimate_tokens(text: str) -> int:
     """Approximate the tokens ``text`` costs in a request."""
     return len(text) // _CHARS_PER_TOKEN
 
 
+def profile_tokens(dirname: str) -> int:
+    """What a profile adds to every request, briefing plus memory."""
+    return estimate_tokens(read_profile_text(dirname) + read_memory_text(dirname))
+
+
 def profile_section(entry: Profile | None) -> str:
     """The system-prompt section for ``entry``, read fresh from disk.
 
-    Empty when there is no active profile or its file has gone missing, so a
-    profile that is deleted mid-conversation degrades to no profile rather than
+    Empty when there is no active profile or its briefing has gone missing, so
+    a profile deleted mid-conversation degrades to no profile rather than
     breaking the turn.
     """
     if not entry:
         return ""
-    text = read_profile_text(entry["file"])
+    text = read_profile_text(entry["dir"])
     if not text.strip():
         return ""
     return (
         f"\n\n## Agent profile: {entry['name']} "
-        f"(from ~/.ludvart/profiles/{entry['file']})\n"
+        f"(from ~/.ludvart/profiles/{entry['dir']}/{SELF_NAME})\n"
         "Background for the kind of work you are doing here. Treat it as "
         "standing instructions from the user.\n\n" + text
+    )
+
+
+def memory_block(entry: Profile | None) -> str:
+    """``entry``'s memory as a block for the trailing message, read from disk.
+
+    Kept out of the system prompt because the agent writes to this file during
+    a conversation, and an edit to the prompt's first message would cost the
+    provider's cached prefix for everything after it.
+    """
+    if not entry:
+        return ""
+    text = read_memory_text(entry["dir"])
+    if not text.strip():
+        return ""
+    return (
+        f'<memory profile="{entry["name"]}" '
+        f'file="~/.ludvart/profiles/{entry["dir"]}/{MEMORY_NAME}">\n'
+        "Long-term notes you have kept across conversations for this profile. "
+        "Append to that file when you learn something worth keeping.\n\n"
+        f"{text.rstrip()}\n</memory>"
     )
 
 
 class ActiveProfile:
     """The active profile as the agent loop sees it: always re-read from disk.
 
-    Both the registry and the file are read on every call, so ``/profile use``
+    Both the registry and the files are read on every call, so ``/profile use``
     and edits to the markdown take effect on the next request instead of at the
     next restart.
     """
@@ -232,3 +292,6 @@ class ActiveProfile:
 
     def section(self) -> str:
         return profile_section(self.entry())
+
+    def memory(self) -> str:
+        return memory_block(self.entry())

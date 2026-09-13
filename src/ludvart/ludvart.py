@@ -1779,9 +1779,9 @@ class Ludvart:
     # -- /profile: agent background -----------------------------------------
 
     def _profile_add_start(self, args: list[str]) -> None:
-        """Begin ``/profile add <file.md>``: ask what to call the profile.
+        """Begin ``/profile add <folder>``: ask what to call the profile.
 
-        Only the name is collected here; the file itself lives on the backend
+        Only the name is collected here; the folder itself lives on the backend
         host, so that is where it is checked and registered.
         """
         panel = self._panel
@@ -1789,12 +1789,14 @@ class Ludvart:
             return
         if not args:
             panel.add_system(
-                "Usage: /profile add <file.md> (a file in ~/.ludvart/profiles/)"
+                "Usage: /profile add <folder> (a folder in ~/.ludvart/profiles/ "
+                "holding self.md)"
             )
             self._render_split()
             return
-        self._profile_add = {"file": args[0]}
-        panel.add_system(f"Name for {args[0]} (or 'cancel'):")
+        folder = args[0].rstrip("/")
+        self._profile_add = {"dir": folder}
+        panel.add_system(f"Name for {folder}/ (or 'cancel'):")
         self._render_split()
 
     def _feed_profile_add(self, line: str) -> None:
@@ -1809,7 +1811,7 @@ class Ludvart:
             self._render_split()
             return
         self._forward_command_to_backend(
-            "profile add", payload={"name": name, "file": pending["file"]}
+            "profile add", payload={"name": name, "dir": pending["dir"]}
         )
         self._render_split()
 

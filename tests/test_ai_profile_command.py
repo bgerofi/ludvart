@@ -48,9 +48,9 @@ def test_profile_is_a_backend_command():
 
 def test_add_asks_for_a_name_then_forwards_it():
     r = _make_ludvart()
-    r._profile_add_start(["investigator.md"])
-    assert r._profile_add == {"file": "investigator.md"}
-    assert "investigator.md" in _systems(r)[-1]
+    r._profile_add_start(["investigator"])
+    assert r._profile_add == {"dir": "investigator"}
+    assert "investigator" in _systems(r)[-1]
 
     r._feed_profile_add("StabilityDB investigator")
     assert r._profile_add is None
@@ -58,24 +58,32 @@ def test_add_asks_for_a_name_then_forwards_it():
         "line": "profile add",
         "payload": {
             "name": "StabilityDB investigator",
-            "file": "investigator.md",
+            "dir": "investigator",
         },
     }, r.forwarded
     print("/profile add asks for a name and forwards it: OK")
 
 
-def test_add_without_a_filename_shows_the_usage():
+def test_a_trailing_slash_is_accepted():
+    """Tab-completing a folder in the shell leaves one behind."""
+    r = _make_ludvart()
+    r._profile_add_start(["investigator/"])
+    assert r._profile_add == {"dir": "investigator"}
+    print("/profile add accepts a trailing slash on the folder: OK")
+
+
+def test_add_without_a_folder_shows_the_usage():
     r = _make_ludvart()
     r._profile_add_start([])
     assert r._profile_add is None
     assert "Usage: /profile add" in _systems(r)[-1]
     assert not r.forwarded, r.forwarded
-    print("/profile add without a filename shows the usage: OK")
+    print("/profile add without a folder shows the usage: OK")
 
 
 def test_add_can_be_cancelled():
     r = _make_ludvart()
-    r._profile_add_start(["x.md"])
+    r._profile_add_start(["x"])
     r._feed_profile_add("cancel")
     assert r._profile_add is None
     assert not r.forwarded, r.forwarded
@@ -85,7 +93,7 @@ def test_add_can_be_cancelled():
 
 def test_an_empty_name_cancels_rather_than_registering_a_nameless_profile():
     r = _make_ludvart()
-    r._profile_add_start(["x.md"])
+    r._profile_add_start(["x"])
     r._feed_profile_add("   ")
     assert r._profile_add is None
     assert not r.forwarded, r.forwarded
@@ -93,19 +101,19 @@ def test_an_empty_name_cancels_rather_than_registering_a_nameless_profile():
 
 
 def test_add_needs_a_backend():
-    """The profile files live on the backend host, so there is nothing to do."""
+    """The profile folders live on the backend host, so there is nothing to do."""
     r = _make_ludvart()
     r._backend_client = None
-    r._profile_add_start(["x.md"])
+    r._profile_add_start(["x"])
     assert r._profile_add is None
     print("/profile add needs a backend: OK")
 
 
 def test_the_slash_command_routes_add_to_the_prompt():
     r = _make_ludvart()
-    r._handle_slash_command("/profile add notes.md")
+    r._handle_slash_command("/profile add notes")
     # The prompt is waiting; nothing has reached the backend yet.
-    assert r._profile_add == {"file": "notes.md"}
+    assert r._profile_add == {"dir": "notes"}
     assert not r.forwarded, r.forwarded
     print("/profile add is routed to the client prompt: OK")
 
@@ -121,7 +129,8 @@ def test_the_other_subcommands_go_straight_to_the_backend():
 def main():
     test_profile_is_a_backend_command()
     test_add_asks_for_a_name_then_forwards_it()
-    test_add_without_a_filename_shows_the_usage()
+    test_a_trailing_slash_is_accepted()
+    test_add_without_a_folder_shows_the_usage()
     test_add_can_be_cancelled()
     test_an_empty_name_cancels_rather_than_registering_a_nameless_profile()
     test_add_needs_a_backend()

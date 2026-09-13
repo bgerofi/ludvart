@@ -149,11 +149,13 @@ class AgentCore:
             raise TurnCancelled()
 
     def _system_message(self) -> dict:
-        """The system turn for one request, with the profile read fresh.
+        """The system turn for one request, with the profile briefing read fresh.
 
-        Built per request rather than per turn so that editing the profile file,
-        or switching profiles, is felt by the very next request instead of the
-        next conversation.
+        Built per request rather than per turn so that editing ``self.md``, or
+        switching profiles, is felt by the very next request instead of the
+        next conversation. The profile's memory goes to the other end of the
+        prompt instead (see :meth:`_live_block`), because the agent writes to
+        it mid-conversation and this message is the root of the cached prefix.
         """
         content = self.system_prompt
         if self.profile is not None:
@@ -507,15 +509,18 @@ class AgentCore:
     )
 
     @classmethod
-    def _live_block(cls, live: str) -> str:
+    def _live_block(cls, live: str, memory: str = "") -> str:
         """Build the single message that may differ between requests.
 
-        Everything that changes request to request -- the current screen and the
-        tool reminder -- is concentrated here, at the very end of the prompt.
-        Nothing before it is ever rewritten, so a provider's prompt cache keeps
-        matching the whole prefix instead of losing it to an edit in the middle.
+        Everything that changes request to request -- the profile's long-term
+        memory, the current screen and the tool reminder -- is concentrated
+        here, at the very end of the prompt. Nothing before it is ever
+        rewritten, so a provider's prompt cache keeps matching the whole prefix
+        instead of losing it to an edit in the middle.
         """
         parts = []
+        if memory:
+            parts.append(memory)
         if live:
             parts.append(cls._LIVE_SCREEN_INTRO)
             parts.append(live)
@@ -572,7 +577,8 @@ class AgentCore:
         """
         history = self._drop_unanswered_tool_calls(self.history)
         history, live = self._collapse_screenshots(history)
-        history.append({"role": "user", "content": self._live_block(live)})
+        memory = self.profile.memory() if self.profile is not None else ""
+        history.append({"role": "user", "content": self._live_block(live, memory)})
         build = getattr(self.llm, "build_context", None)
         if build is None:
             return history

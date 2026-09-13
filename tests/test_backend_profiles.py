@@ -15,6 +15,8 @@ from pathlib import Path
 from ludvart.backend_client import BackendClient
 from ludvart.profiles import (
     LARGE_PROFILE_TOKENS,
+    MEMORY_NAME,
+    SELF_NAME,
     active_profile,
     add_profile,
     load_profiles,
@@ -42,6 +44,13 @@ def _tmp_profiles():
         else:
             os.environ["LUDVART_PROFILES_DIR"] = old
         shutil.rmtree(root, ignore_errors=True)
+
+
+def _make(root: Path, dirname: str, briefing: str = "brief", memory=None):
+    (root / dirname).mkdir(parents=True, exist_ok=True)
+    (root / dirname / SELF_NAME).write_text(briefing, encoding="utf-8")
+    if memory is not None:
+        (root / dirname / MEMORY_NAME).write_text(memory, encoding="utf-8")
 
 
 def _run_commands(commands, session=None):
@@ -72,85 +81,105 @@ def test_profile_list_is_helpful_when_empty():
     print("/profile list explains how to add one when empty: OK")
 
 
-def test_profile_add_registers_the_file():
+def test_profile_add_registers_the_folder():
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "inv.md").write_text("how to investigate", encoding="utf-8")
+        _make(root, "inv", "how to investigate")
         host = _run_commands(
-            [("profile add", {"name": "investigator", "file": "inv.md"})]
+            [("profile add", {"name": "investigator", "dir": "inv"})]
         )
 
         assert any("Registered profile" in s for s in host.systems), host.systems
         profiles = load_profiles()
         assert [p["name"] for p in profiles] == ["investigator"]
+        assert [p["dir"] for p in profiles] == ["inv"]
         # Adding does not activate; /profile use is the explicit second step.
         assert active_profile(profiles) is None
-    print("/profile add registers the file without activating it: OK")
+    print("/profile add registers the folder without activating it: OK")
 
 
-def test_profile_add_refuses_a_file_that_is_not_there():
-    with _tmp_sessions(), _tmp_profiles():
-        host = _run_commands([("profile add", {"name": "x", "file": "gone.md"})])
-        assert any("gone.md" in s for s in host.systems), host.systems
+def test_profile_add_refuses_a_folder_without_a_briefing():
+    with _tmp_sessions(), _tmp_profiles() as root:
+        (root / "empty").mkdir()
+        host = _run_commands([("profile add", {"name": "x", "dir": "empty"})])
+        assert any(SELF_NAME in s for s in host.systems), host.systems
         assert load_profiles() == []
-    print("/profile add refuses a file that is not in the profiles dir: OK")
+    print("/profile add refuses a folder with no self.md: OK")
+
+
+def test_profile_add_refuses_a_folder_that_is_not_there():
+    with _tmp_sessions(), _tmp_profiles():
+        host = _run_commands([("profile add", {"name": "x", "dir": "gone"})])
+        assert any("gone" in s for s in host.systems), host.systems
+        assert load_profiles() == []
+    print("/profile add refuses a folder that is not in the profiles dir: OK")
 
 
 def test_profile_add_refuses_a_path_outside_the_profiles_dir():
     with _tmp_sessions(), _tmp_profiles():
-        host = _run_commands(
-            [("profile add", {"name": "x", "file": "../../etc/passwd"})]
-        )
-        assert any("Not a profile filename" in s for s in host.systems), host.systems
+        host = _run_commands([("profile add", {"name": "x", "dir": "../../etc"})])
+        assert any("Not a profile directory" in s for s in host.systems), host.systems
         assert load_profiles() == []
     print("/profile add refuses a path outside the profiles dir: OK")
 
 
-def test_profile_list_shows_index_name_file_and_cost():
+def test_profile_list_shows_index_name_folder_and_cost():
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "a.md").write_text("x" * 4000, encoding="utf-8")
-        (root / "b.md").write_text("y" * 400, encoding="utf-8")
+        _make(root, "a", "x" * 4000)
+        _make(root, "b", "y" * 400)
         save_profiles(
-            set_active(add_profile(add_profile([], "alpha", "a.md"), "beta", "b.md"), 1)
+            set_active(add_profile(add_profile([], "alpha", "a"), "beta", "b"), 1)
         )
 
         host = _run_commands(["profile list"])
         listing = "\n".join(host.systems)
         assert "1. alpha" in listing, listing
-        assert "(a.md)" in listing and "(b.md)" in listing, listing
+        assert "(a/)" in listing and "(b/)" in listing, listing
         assert "1.0k tokens" in listing, listing
         assert "100 tokens" in listing, listing
         # The active one is marked.
         assert any(s.startswith("*2. beta") for s in host.systems), host.systems
-    print("/profile list shows the index, name, file and token cost: OK")
+    print("/profile list shows the index, name, folder and token cost: OK")
+
+
+def test_profile_list_counts_the_memory_in_the_cost():
+    with _tmp_sessions(), _tmp_profiles() as root:
+        _make(root, "a", "x" * 400, memory="y" * 800)
+        save_profiles(add_profile([], "alpha", "a"))
+
+        host = _run_commands(["profile list"])
+        line = next(s for s in host.systems if "(a/)" in s)
+        assert "300 tokens" in line, line
+        assert f"incl. {MEMORY_NAME}" in line, line
+    print("/profile list counts memory.md in what a profile costs: OK")
 
 
 def test_profile_list_warns_about_a_large_profile():
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "big.md").write_text("x" * (LARGE_PROFILE_TOKENS * 4 + 8), "utf-8")
-        (root / "small.md").write_text("small", encoding="utf-8")
-        save_profiles(add_profile(add_profile([], "big", "big.md"), "small", "small.md"))
+        _make(root, "big", "x" * (LARGE_PROFILE_TOKENS * 4 + 8))
+        _make(root, "small", "small")
+        save_profiles(add_profile(add_profile([], "big", "big"), "small", "small"))
 
         host = _run_commands(["profile list"])
-        big = next(s for s in host.systems if "big.md" in s)
-        small = next(s for s in host.systems if "small.md" in s)
+        big = next(s for s in host.systems if "(big/)" in s)
+        small = next(s for s in host.systems if "(small/)" in s)
         assert "large" in big and "compacting" in big, big
         assert "large" not in small, small
     print("/profile list warns about a profile that is too large: OK")
 
 
-def test_profile_list_flags_a_missing_file():
+def test_profile_list_flags_a_missing_briefing():
     with _tmp_sessions(), _tmp_profiles():
-        save_profiles(add_profile([], "ghost", "ghost.md"))
+        save_profiles(add_profile([], "ghost", "ghost"))
         host = _run_commands(["profile list"])
-        assert any("missing" in s for s in host.systems), host.systems
-    print("/profile list flags a profile whose file has gone: OK")
+        assert any("is missing" in s for s in host.systems), host.systems
+    print("/profile list flags a profile whose self.md has gone: OK")
 
 
 def test_profile_use_switches_and_none_clears():
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "a.md").write_text("A", encoding="utf-8")
-        (root / "b.md").write_text("B", encoding="utf-8")
-        save_profiles(add_profile(add_profile([], "alpha", "a.md"), "beta", "b.md"))
+        _make(root, "a", "A")
+        _make(root, "b", "B")
+        save_profiles(add_profile(add_profile([], "alpha", "a"), "beta", "b"))
 
         _run_commands(["profile use 2"])
         assert active_profile(load_profiles())["name"] == "beta"
@@ -171,16 +200,17 @@ def test_profile_use_reports_an_unknown_profile():
     print("/profile use reports an unknown profile: OK")
 
 
-def test_profile_delete_unregisters_but_keeps_the_file():
+def test_profile_delete_unregisters_but_keeps_the_folder():
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "a.md").write_text("A", encoding="utf-8")
-        save_profiles(set_active(add_profile([], "alpha", "a.md"), 0))
+        _make(root, "a", "A", memory="remembered")
+        save_profiles(set_active(add_profile([], "alpha", "a"), 0))
 
         host = _run_commands(["profile delete 1"])
         assert load_profiles() == []
-        assert (root / "a.md").is_file()
-        assert any("a.md" in s for s in host.systems), host.systems
-    print("/profile delete unregisters but leaves the markdown: OK")
+        assert (root / "a" / SELF_NAME).is_file()
+        assert (root / "a" / MEMORY_NAME).is_file()
+        assert any("a/" in s for s in host.systems), host.systems
+    print("/profile delete unregisters but leaves the folder: OK")
 
 
 def test_unknown_profile_subcommand_is_reported():
@@ -192,9 +222,9 @@ def test_unknown_profile_subcommand_is_reported():
 
 def test_session_load_restores_the_session_profile():
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "a.md").write_text("A", encoding="utf-8")
-        (root / "b.md").write_text("B", encoding="utf-8")
-        save_profiles(add_profile(add_profile([], "alpha", "a.md"), "beta", "b.md"))
+        _make(root, "a", "A")
+        _make(root, "b", "B")
+        save_profiles(add_profile(add_profile([], "alpha", "a"), "beta", "b"))
 
         saved = SessionStore.create_new()
         saved.save(
@@ -211,8 +241,8 @@ def test_session_load_restores_the_session_profile():
 
 def test_session_load_keeps_the_current_profile_when_unavailable():
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "a.md").write_text("A", encoding="utf-8")
-        save_profiles(set_active(add_profile([], "alpha", "a.md"), 0))
+        _make(root, "a", "A")
+        save_profiles(set_active(add_profile([], "alpha", "a"), 0))
 
         saved = SessionStore.create_new()
         saved.save([("you", "q")], [], provider="custom", profile="long-gone")
@@ -226,8 +256,8 @@ def test_session_load_keeps_the_current_profile_when_unavailable():
 def test_session_without_a_profile_field_loads_unchanged():
     """Sessions saved before profiles existed must still load."""
     with _tmp_sessions(), _tmp_profiles() as root:
-        (root / "a.md").write_text("A", encoding="utf-8")
-        save_profiles(set_active(add_profile([], "alpha", "a.md"), 0))
+        _make(root, "a", "A")
+        save_profiles(set_active(add_profile([], "alpha", "a"), 0))
 
         saved = SessionStore.create_new()
         saved.save([("you", "q")], [], provider="custom")
@@ -240,15 +270,17 @@ def test_session_without_a_profile_field_loads_unchanged():
 
 def main():
     test_profile_list_is_helpful_when_empty()
-    test_profile_add_registers_the_file()
-    test_profile_add_refuses_a_file_that_is_not_there()
+    test_profile_add_registers_the_folder()
+    test_profile_add_refuses_a_folder_without_a_briefing()
+    test_profile_add_refuses_a_folder_that_is_not_there()
     test_profile_add_refuses_a_path_outside_the_profiles_dir()
-    test_profile_list_shows_index_name_file_and_cost()
+    test_profile_list_shows_index_name_folder_and_cost()
+    test_profile_list_counts_the_memory_in_the_cost()
     test_profile_list_warns_about_a_large_profile()
-    test_profile_list_flags_a_missing_file()
+    test_profile_list_flags_a_missing_briefing()
     test_profile_use_switches_and_none_clears()
     test_profile_use_reports_an_unknown_profile()
-    test_profile_delete_unregisters_but_keeps_the_file()
+    test_profile_delete_unregisters_but_keeps_the_folder()
     test_unknown_profile_subcommand_is_reported()
     test_session_load_restores_the_session_profile()
     test_session_load_keeps_the_current_profile_when_unavailable()

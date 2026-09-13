@@ -1207,18 +1207,20 @@ def test_a_dangling_tool_call_is_never_sent():
 
 
 class _FakeProfile:
-    """Stands in for ActiveProfile: whatever ``text`` says at the time."""
+    """Stands in for ActiveProfile: whatever the two files say at the time."""
 
-    def __init__(self, text=""):
+    def __init__(self, text="", memory=""):
         self.text = text
-        self.reads = 0
+        self.memory_text = memory
 
     def name(self):
         return "fake" if self.text else ""
 
     def section(self):
-        self.reads += 1
         return self.text
+
+    def memory(self):
+        return self.memory_text
 
 
 def test_no_profile_leaves_the_system_prompt_alone():
@@ -1243,12 +1245,48 @@ def test_the_profile_rides_in_the_system_prompt():
     print("the active profile rides in the system prompt: OK")
 
 
+def test_the_memory_rides_in_the_trailing_block_not_the_prompt():
+    """Memory is written mid-conversation, so it must stay off the prefix."""
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("ok")])
+    core = AgentCore(
+        llm,
+        host,
+        system_prompt="SYS",
+        tools=[_tool("inject_input")],
+        profile=_FakeProfile("\n\nBACKGROUND", memory="<memory>NOTES</memory>"),
+    )
+    core.run_turn("q", "SCREEN")
+
+    sent = llm.seen_messages[-1]
+    assert "NOTES" not in sent[0]["content"], sent[0]
+    users = [m for m in sent if m.get("role") == "user"]
+    assert "NOTES" not in users[0]["content"], users[0]
+    assert "NOTES" in users[-1]["content"], users[-1]
+    # The reminder still has the last word, so the memory sits above it.
+    assert users[-1]["content"].rstrip().endswith("</reminder>")
+    print("the profile's memory rides in the trailing block: OK")
+
+
+def test_no_memory_leaves_the_trailing_block_unchanged():
+    host = RecordingHost()
+    llm = ScriptedLLM([_text_turn("ok")])
+    core = AgentCore(
+        llm, host, system_prompt="SYS", profile=_FakeProfile("X")
+    )
+    core.run_turn("q", "SCREEN")
+
+    trailing = llm.seen_messages[-1][-1]["content"]
+    assert trailing.startswith(AgentCore._LIVE_SCREEN_INTRO), trailing
+    print("a profile with no memory does not touch the trailing block: OK")
+
+
 def test_the_profile_is_re_read_for_every_request():
     """Editing the profile mid-conversation is felt by the next request."""
     host = RecordingHost()
     call = ToolCall(id="c1", name="inject_input", input={"text": "x"})
     llm = ScriptedLLM([_tool_turn("", call), _text_turn("done")])
-    profile = _FakeProfile("\n\nFIRST")
+    profile = _FakeProfile("\n\nFIRST", memory="MEM-FIRST")
     core = AgentCore(
         llm, host, system_prompt="SYS", tools=[_tool("inject_input")],
         profile=profile,
@@ -1258,6 +1296,7 @@ def test_the_profile_is_re_read_for_every_request():
 
     def _edit_profile_then_run(name, args):
         profile.text = "\n\nSECOND"
+        profile.memory_text = "MEM-SECOND"
         return original_tool(name, args)
 
     host.run_terminal_tool = _edit_profile_then_run
@@ -1266,6 +1305,8 @@ def test_the_profile_is_re_read_for_every_request():
     # Two requests in one turn: the second already carries the edited text.
     assert llm.seen_messages[0][0]["content"] == "SYS\n\nFIRST"
     assert llm.seen_messages[1][0]["content"] == "SYS\n\nSECOND"
+    assert "MEM-FIRST" in llm.seen_messages[0][-1]["content"]
+    assert "MEM-SECOND" in llm.seen_messages[1][-1]["content"]
     print("the profile is re-read for every request: OK")
 
 
@@ -1347,6 +1388,8 @@ def main():
     test_a_dangling_tool_call_is_never_sent()
     test_no_profile_leaves_the_system_prompt_alone()
     test_the_profile_rides_in_the_system_prompt()
+    test_the_memory_rides_in_the_trailing_block_not_the_prompt()
+    test_no_memory_leaves_the_trailing_block_unchanged()
     test_the_profile_is_re_read_for_every_request()
     test_the_profile_name_is_saved_with_the_session()
     print("\nALL agent core tests passed.")
