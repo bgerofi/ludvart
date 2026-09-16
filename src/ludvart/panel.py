@@ -70,6 +70,9 @@ class AiPanel:
         self.activity = "Thinking"
         self.tick = 0  # advances while thinking, drives the spinner animation
         self.scroll = 0  # rows scrolled up from the bottom of the transcript
+        # Off by default: the gutter is part of every line the terminal copies,
+        # so leaving it on makes a multi-line answer awkward to paste elsewhere.
+        self.show_numbers = False
         self._messages: list[tuple[str, str]] = []
         # Live, transient narration streamed from the model during a turn. Shown
         # dim just above the spinner while ``thinking`` and cleared once the turn
@@ -308,6 +311,8 @@ class AiPanel:
     def _content_lines(self) -> list[bytes]:
         lines: list[bytes] = []
         numbers = turn_numbers(self._messages)
+        if not self.show_numbers:
+            numbers = [None] * len(numbers)
         digits = max((len(str(n)) for n in numbers if n), default=0)
         # "[N] ", right-aligned so the text column does not jog at 10 and 100.
         label_w = digits + 3 if digits else 0
@@ -389,7 +394,10 @@ class AiPanel:
         label = f" ludvart · {self.provider} " if self.provider else " ludvart "
         if self.thinking:
             label += f"· {self.activity} "
-        hints = "^O/Esc:close  M-Enter:newline  S-arrows/^Space:select  PgUp/Dn:scroll "
+        hints = (
+            "^O/Esc:close  M-Enter:newline  ^N:numbers  "
+            "S-arrows/^Space:select  PgUp/Dn:scroll "
+        )
         if self.editor.mark:
             hints = "MARK - move to select, ^Space cancels  "
         if more_above > 0:

@@ -1469,6 +1469,8 @@ class Ludvart:
         elif key == b"\x17":  # Ctrl-W -> delete word back
             editor.delete_word_back()
             panel.scroll = 0
+        elif key == b"\x0e":  # Ctrl-N -> show/hide the message numbers
+            panel.show_numbers = not panel.show_numbers
         elif key == b"\t":  # Tab -> complete an internal slash command
             self._complete_input()
         elif key[:1] == b"\x1b":

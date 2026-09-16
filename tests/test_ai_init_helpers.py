@@ -269,6 +269,18 @@ def test_tab_lists_the_subcommands_when_ambiguous():
     print("Tab lists the subcommands when the choice is ambiguous: OK")
 
 
+def test_ctrl_n_toggles_the_message_numbers():
+    r, _, _ = make_ludvart()
+    assert r._panel.show_numbers is False
+    r._panel_key(b"\x0e")
+    assert r._panel.show_numbers is True
+    r._panel_key(b"\x0e")
+    assert r._panel.show_numbers is False
+    # It is a view toggle, so it must not reach the input being typed.
+    assert r._panel.editor.text == "", repr(r._panel.editor.text)
+    print("Ctrl-N toggles the message numbers: OK")
+
+
 if __name__ == "__main__":
     test_init_helpers_is_deterministic()
     test_init_helpers_works_without_llm()
@@ -281,4 +293,5 @@ if __name__ == "__main__":
     test_tab_completion()
     test_tab_completion_completes_a_subcommand()
     test_tab_lists_the_subcommands_when_ambiguous()
+    test_ctrl_n_toggles_the_message_numbers()
     print("all init-helpers tests passed")

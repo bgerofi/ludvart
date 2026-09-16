@@ -255,6 +255,7 @@ def test_a_system_row_is_clipped_to_the_width_not_wrapped():
 
 def test_each_exchange_is_numbered_in_the_transcript():
     panel = AiPanel(cols=60, height=8, provider="test")
+    panel.show_numbers = True
     panel.add_user("first question")
     panel.add_reply("first answer")
     panel.add_info("a note")
@@ -273,6 +274,7 @@ def test_each_exchange_is_numbered_in_the_transcript():
 
 def test_turn_numbers_are_right_aligned_so_the_text_column_holds():
     panel = AiPanel(cols=60, height=8, provider="test")
+    panel.show_numbers = True
     for i in range(10):
         panel.add_user(f"q{i}")
         panel.add_reply(f"a{i}")
@@ -285,6 +287,7 @@ def test_turn_numbers_are_right_aligned_so_the_text_column_holds():
 
 def test_a_wrapped_message_indents_under_its_number():
     panel = AiPanel(cols=24, height=8, provider="test")
+    panel.show_numbers = True
     panel.add_user("a question long enough to wrap onto another row")
     lines = panel._content_lines()
     assert len(lines) > 1, lines
@@ -293,6 +296,23 @@ def test_a_wrapped_message_indents_under_its_number():
     assert lines[1].startswith(b"    "), lines[1]
     assert b"] " not in lines[1], lines[1]
     print("a wrapped message indents under its number: OK")
+
+
+def test_the_number_gutter_is_off_until_it_is_asked_for():
+    # It is copied along with the text, so a pasted answer would carry it.
+    panel = AiPanel(cols=60, height=8, provider="test")
+    assert panel.show_numbers is False
+    panel.add_user("a question")
+    panel.add_reply("an answer")
+    hidden = panel._content_lines()
+    assert b"[1] " not in hidden[0], hidden[0]
+    assert hidden[1].startswith(b"an answer"), hidden[1]
+    assert b"^N:numbers" in panel._header(0)
+
+    panel.show_numbers = True
+    shown = panel._content_lines()
+    assert b"[1] " in shown[0], shown[0]
+    print("the number gutter is off by default: OK")
 
 
 if __name__ == "__main__":
@@ -307,4 +327,5 @@ if __name__ == "__main__":
     test_each_exchange_is_numbered_in_the_transcript()
     test_turn_numbers_are_right_aligned_so_the_text_column_holds()
     test_a_wrapped_message_indents_under_its_number()
+    test_the_number_gutter_is_off_until_it_is_asked_for()
     print("all panel-edit tests passed")
