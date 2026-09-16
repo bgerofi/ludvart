@@ -331,26 +331,29 @@ class CopilotGateway:
             "--port",
             str(self.port),
         ]
+        deployment: dict = {
+            "model_name": self.litellm_model,
+            "litellm_params": {"model": self.litellm_model},
+        }
         if self.api_mode == "responses":
-            # Copilot's Responses-only models require this explicit proxy mode;
-            # ``--model`` alone configures a Chat Completions deployment.
-            self._config_path = os.path.join(
-                os.path.dirname(self.log_path), f"copilot-responses-{self.port}.json"
-            )
-            config = {
-                "model_list": [
-                    {
-                        "model_name": self.litellm_model,
-                        "model_info": {"mode": "responses"},
-                        "litellm_params": {"model": self.litellm_model},
-                    }
-                ]
-            }
-            with open(self._config_path, "w", encoding="utf-8") as config_file:
-                json.dump(config, config_file)
-            cmd += ["--config", self._config_path]
-        else:
-            cmd += ["--model", self.litellm_model]
+            # Copilot's Responses-only models require this explicit proxy mode.
+            deployment["model_info"] = {"mode": "responses"}
+        self._config_path = os.path.join(
+            os.path.dirname(self.log_path), f"copilot-{self.port}.json"
+        )
+        config = {
+            "model_list": [deployment],
+            "litellm_settings": {
+                # LiteLLM rewrites every system turn into an assistant turn for
+                # Copilot unless this is set, which silently costs us the whole
+                # system prompt -- the agent's instructions and the profile
+                # briefing both ride in it.
+                "disable_copilot_system_to_assistant": True,
+            },
+        }
+        with open(self._config_path, "w", encoding="utf-8") as config_file:
+            json.dump(config, config_file)
+        cmd += ["--config", self._config_path]
         # Detach into its own process group so we can tear down the whole tree,
         # and route its noisy output to a log file (never the terminal, which
         # ludvart composites at runtime). The fork itself happens on the shared

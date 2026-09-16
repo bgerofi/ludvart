@@ -121,6 +121,25 @@ def test_responses_gateway_writes_litellm_mode_config(tmp, monkeypatch_cli):
     print("Responses gateway config: OK")
 
 
+def test_gateway_keeps_system_turns_as_system(tmp, monkeypatch_cli):
+    # LiteLLM's default is to rewrite system turns into assistant turns for
+    # Copilot, which costs us the system prompt the agent runs on.
+    monkeypatch_cli(_make_cli(tmp, _FAKE_SERVER))
+    gw = CopilotGateway("gpt-4o", log_path=os.path.join(tmp, "gw.log"))
+    gw.start(timeout=15)
+    try:
+        assert gw._config_path is not None
+        with open(gw._config_path, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        assert config["litellm_settings"]["disable_copilot_system_to_assistant"] is True
+        deployment = config["model_list"][0]
+        assert "model_info" not in deployment
+        assert deployment["litellm_params"]["model"] == gw.litellm_model
+    finally:
+        gw.stop()
+    print("system turns preserved: OK")
+
+
 def test_gateway_start_and_stop(tmp, monkeypatch_cli):
     monkeypatch_cli(_make_cli(tmp, _FAKE_SERVER))
     gw = CopilotGateway("gpt-4o", log_path=os.path.join(tmp, "gw.log"))
@@ -327,6 +346,7 @@ def _run():
         test_config_helpers,
         test_gateway_model_and_url,
         test_responses_gateway_writes_litellm_mode_config,
+        test_gateway_keeps_system_turns_as_system,
         test_gateway_start_and_stop,
         test_gateway_survives_worker_thread,
         test_gateway_start_failure,
