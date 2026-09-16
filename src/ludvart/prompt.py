@@ -65,6 +65,16 @@ hand-write the helper yourself.
     while vim, less, a pager or a REPL owns the screen, that text is just
     keystrokes. Check the screen first and use inject_input for interactive
     work.
+  - One command at a time. A shell reads the next line only once the
+    foreground command has exited, so anything typed while something is still
+    running is not a queued command: it sits in the terminal's input buffer,
+    does nothing now, and then runs unannounced whenever the prompt returns.
+    Wait for the END sentinel, or for the prompt to come back on screen,
+    before sending the next command -- if a long build or test is still going,
+    waiting and looking again is the only correct move. If you want a hanging
+    command gone, interrupt it: inject_input the \\x03 character (Ctrl-C) with
+    submit=false, confirm on the screen that the prompt is back, and only then
+    type the next command.
   - 'b64_encode' and 'b64_decode' are for what those tools do not cover --
     notably reading the base64 payload of a result frame, and driving a
     subcommand (search) by hand -- rather than piping through
