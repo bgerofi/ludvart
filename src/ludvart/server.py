@@ -1079,7 +1079,12 @@ def serve_main(argv: Sequence[str] | None = None) -> int:
     :func:`claim_stdout` for why nothing else can reach it.
     """
     from .llm import ensure_context_windows_file
+    from .models import set_private as models_private
+    from .profiles import set_private as profiles_private
 
+    private = "--private" in (argv or ())
+    models_private(private)
+    profiles_private(private)
     writer = claim_stdout()
     # The backend owns every model concern now, including the editable
     # context-window table, so seed it here rather than on the client.

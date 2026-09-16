@@ -121,6 +121,17 @@ def _coerce(raw: Any) -> Registration | None:
     }
 
 
+#: Private mode: this process picks its own model and leaves the shared
+#: registry's choice alone.
+_private = False
+
+
+def set_private(enabled: bool) -> None:
+    """Keep this process's active-model choice out of the shared registry."""
+    global _private
+    _private = enabled
+
+
 def load_models(path: str | None = None) -> list[Registration]:
     """Read and validate the registry file (empty list when absent/invalid)."""
     if path is None:
@@ -144,11 +155,17 @@ def save_models(models: list[Registration], path: str | None = None) -> str:
     """Write the registry to ``path`` (default ``models.json``) at ``0600``.
 
     Exactly one entry is kept active (see :func:`_normalize_active`). Returns the
-    path written.
+    path written. Registrations are shared even in private mode; only the choice
+    of which model is in use stays with this process, so the file keeps whichever
+    one it already had.
     """
-    if path is None:
+    shared = path is None
+    if shared:
         path = models_path()
     normalized = _normalize_active(models)
+    if shared and _private:
+        on_disk = {label(r) for r in load_models(path) if r.get("active")}
+        normalized = [{**r, "active": label(r) in on_disk} for r in normalized]
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:

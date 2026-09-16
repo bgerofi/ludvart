@@ -35,6 +35,7 @@ from ludvart.profiles import (
     save_profiles,
     self_path,
     set_active,
+    set_private,
     valid_dirname,
 )
 
@@ -304,6 +305,37 @@ def test_profiles_dir_honours_the_env_override():
     print("profiles_dir honours LUDVART_PROFILES_DIR: OK")
 
 
+def test_private_instance_keeps_its_profile_choice_to_itself():
+    with _tmp_profiles() as root:
+        (root / "one").mkdir()
+        (root / "two").mkdir()
+        save_profiles(
+            [
+                {"name": "One", "dir": "one", "active": True},
+                {"name": "Two", "dir": "two", "active": False},
+            ]
+        )
+        set_private(True)
+        try:
+            save_profiles(set_active(load_profiles(), 1))
+            # This process gets the profile it picked...
+            assert active_profile(load_profiles())["dir"] == "two"
+            # ...while the file still starts everyone else on the first.
+            on_disk = json.loads(config_path().read_text(encoding="utf-8"))
+            assert [p["active"] for p in on_disk["profiles"]] == [True, False]
+            # Registering a profile is not a choice, so it is shared as usual.
+            (root / "three").mkdir()
+            save_profiles(
+                add_profile(load_profiles(), "Three", "three"),
+            )
+            assert [p["dir"] for p in load_profiles()] == ["one", "two", "three"]
+            assert active_profile(load_profiles())["dir"] == "two"
+        finally:
+            set_private(False)
+        assert active_profile(load_profiles())["dir"] == "one"
+    print("private profile choice stays local: OK")
+
+
 def main():
     test_valid_dirname_only_accepts_a_bare_folder_name()
     test_paths_refuse_to_leave_the_profiles_dir()
@@ -320,6 +352,7 @@ def main():
     test_memory_survives_a_missing_briefing()
     test_active_profile_is_re_read_every_time()
     test_profiles_dir_honours_the_env_override()
+    test_private_instance_keeps_its_profile_choice_to_itself()
     print("\nALL profile registry tests passed.")
 
 

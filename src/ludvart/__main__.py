@@ -97,6 +97,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--private",
+        action="store_true",
+        help=(
+            "Keep this instance's model and profile choices to itself: "
+            "/model use and /profile use take effect here without changing "
+            "what other instances start with. Registrations and sessions are "
+            "still shared."
+        ),
+    )
+    parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help="Command (and args) to run. Prefix with '--' to pass flags through.",
@@ -135,7 +145,7 @@ def _run_with_backend(args, command: list[str]) -> int:
     """
     from .backend_client import BackendReconnector
 
-    spawn = _backend_spawn(args.backend, args.forward_port)
+    spawn = _backend_spawn(args.backend, args.forward_port, private=args.private)
 
     def _startup_log(text: str) -> None:
         sys.stderr.write(f"ludvart: {text}\n")
@@ -172,16 +182,18 @@ def _run_with_backend(args, command: list[str]) -> int:
         reconnector.close()
 
 
-def _backend_spawn(spec: str, forward_ports=()):
+def _backend_spawn(spec: str, forward_ports=(), *, private: bool = False):
     """Return a zero-arg factory that spawns a fresh backend transport."""
     from .transport import local_backend, parse_backend_spec, ssh_backend
 
     if spec == "local":
         if forward_ports:
             raise ValueError("--forward-port requires a remote --backend host:folder")
-        return lambda: local_backend()
+        return lambda: local_backend(private=private)
     host, folder = parse_backend_spec(spec)
-    return lambda: ssh_backend(host, folder, forward_ports=forward_ports)
+    return lambda: ssh_backend(
+        host, folder, forward_ports=forward_ports, private=private
+    )
 
 
 if __name__ == "__main__":

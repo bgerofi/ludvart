@@ -118,9 +118,21 @@ def _normalize(profiles: list[Profile]) -> list[Profile]:
     return out
 
 
-def load_profiles(path: Path | str | None = None) -> list[Profile]:
-    """Read the registry (empty list when absent, unreadable or malformed)."""
-    conf = Path(path) if path is not None else config_path()
+#: Private mode: this process picks its own profile and leaves the shared
+#: registry's choice alone. ``None`` means "nothing picked yet, follow the file".
+_private = False
+_private_active: str | None = None
+
+
+def set_private(enabled: bool) -> None:
+    """Keep this process's active-profile choice out of the shared registry."""
+    global _private, _private_active
+    _private = enabled
+    _private_active = None
+
+
+def _read_config(conf: Path) -> list[Profile]:
+    """The registry exactly as the file has it, private mode notwithstanding."""
     try:
         data = json.loads(conf.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -133,11 +145,34 @@ def load_profiles(path: Path | str | None = None) -> list[Profile]:
     return _normalize([p for p in (_coerce(r) for r in raw) if p is not None])
 
 
+def load_profiles(path: Path | str | None = None) -> list[Profile]:
+    """Read the registry (empty list when absent, unreadable or malformed)."""
+    shared = path is None
+    profiles = _read_config(config_path() if shared else Path(path))
+    if shared and _private and _private_active is not None:
+        for profile in profiles:
+            profile["active"] = profile["dir"] == _private_active
+    return profiles
+
+
 def save_profiles(profiles: list[Profile], path: Path | str | None = None) -> Path:
-    """Write the registry atomically, keeping at most one entry active."""
-    conf = Path(path) if path is not None else config_path()
+    """Write the registry atomically, keeping at most one entry active.
+
+    Registrations are shared even in private mode; only the choice of which
+    profile is active stays here, so the file keeps whichever one it already had.
+    """
+    global _private_active
+    shared = path is None
+    conf = config_path() if shared else Path(path)
+    entries = _normalize(profiles)
+    if shared and _private:
+        picked = next((p for p in entries if p["active"]), None)
+        _private_active = picked["dir"] if picked else ""
+        on_disk = {p["dir"] for p in _read_config(conf) if p["active"]}
+        for entry in entries:
+            entry["active"] = entry["dir"] in on_disk
     conf.parent.mkdir(parents=True, exist_ok=True)
-    data = {"version": CONFIG_VERSION, "profiles": _normalize(profiles)}
+    data = {"version": CONFIG_VERSION, "profiles": entries}
     tmp = conf.parent / (conf.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     os.replace(tmp, conf)

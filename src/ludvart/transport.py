@@ -171,9 +171,14 @@ def spawn_transport(
     return Transport(proc)
 
 
-def local_backend_argv(python: str | None = None) -> list[str]:
+def local_backend_argv(
+    python: str | None = None, *, private: bool = False
+) -> list[str]:
     """Argv that runs the backend in this same environment."""
-    return [python or sys.executable, "-m", "ludvart", "serve"]
+    argv = [python or sys.executable, "-m", "ludvart", "serve"]
+    if private:
+        argv.append("--private")
+    return argv
 
 
 def local_backend(
@@ -181,10 +186,11 @@ def local_backend(
     python: str | None = None,
     env: dict[str, str] | None = None,
     stderr: IO | int | None = None,
+    private: bool = False,
 ) -> Transport:
     """Fork a local ``python -m ludvart serve`` backend and connect to it."""
     return spawn_transport(
-        local_backend_argv(python), env=env, stderr=stderr
+        local_backend_argv(python, private=private), env=env, stderr=stderr
     )
 
 
@@ -194,6 +200,7 @@ def ssh_backend_argv(
     *,
     remote_env: dict[str, str] | None = None,
     forward_ports: Sequence[int] = (),
+    private: bool = False,
 ) -> list[str]:
     """Argv that runs the backend on ``host`` from the checkout at ``folder``.
 
@@ -207,6 +214,8 @@ def ssh_backend_argv(
     shell-quoted).
     """
     cmd = ".venv/bin/python -m ludvart serve"
+    if private:
+        cmd += " --private"
     if remote_env:
         assigns = " ".join(
             f"{name}={_sh_quote(str(value))}" for name, value in remote_env.items()
@@ -234,6 +243,7 @@ def ssh_backend(
     remote_env: dict[str, str] | None = None,
     forward_ports: Sequence[int] = (),
     stderr: IO | int | None = None,
+    private: bool = False,
 ) -> Transport:
     """Run the backend on a remote host over SSH and connect to it."""
     available_ports = [port for port in forward_ports if _can_bind_forward(port)]
@@ -243,6 +253,7 @@ def ssh_backend(
             folder,
             remote_env=remote_env,
             forward_ports=available_ports,
+            private=private,
         ),
         stderr=stderr,
     )

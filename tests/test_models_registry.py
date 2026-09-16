@@ -221,6 +221,25 @@ def test_load_registry_empty_when_nothing_configured():
     print("load_registry empty when nothing configured: OK")
 
 
+def test_private_instance_keeps_its_model_choice_to_itself():
+    _tmp_registry()
+    reg.save_models([_sample(model="gpt-4o", active=True), _sample(model="claude-x")])
+    reg.set_private(True)
+    try:
+        models = reg.set_active(reg.load_models(), 1)
+        reg.save_models(models)
+        # The shared registry still points everyone else at the first model.
+        assert reg.active_index(reg.load_models()) == 0
+        # Registering a model is not a choice, so it is shared as usual.
+        reg.save_models([*models, _sample(model="gpt-5")])
+        shared = reg.load_models()
+        assert [m["model"] for m in shared] == ["gpt-4o", "claude-x", "gpt-5"]
+        assert reg.active_index(shared) == 0
+    finally:
+        reg.set_private(False)
+    print("private model choice stays local: OK")
+
+
 def main():
     test_load_missing_is_empty()
     test_save_and_reload_roundtrip_and_perms()
@@ -232,6 +251,7 @@ def main():
     test_load_registry_migrates_once_from_conf()
     test_migrate_prefers_direct_provider_over_copilot()
     test_load_registry_empty_when_nothing_configured()
+    test_private_instance_keeps_its_model_choice_to_itself()
     print("\nALL model-registry tests passed.")
 
 

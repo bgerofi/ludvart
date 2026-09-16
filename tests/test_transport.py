@@ -79,6 +79,16 @@ def test_local_backend_argv():
     print("local_backend_argv targets 'ludvart serve': OK")
 
 
+def test_backend_argv_carries_private_mode():
+    assert local_backend_argv()[-1] == "serve"
+    assert local_backend_argv(private=True)[-1] == "--private"
+    plain = ssh_backend_argv("me@box", "/opt/ludvart")[-1]
+    private = ssh_backend_argv("me@box", "/opt/ludvart", private=True)[-1]
+    assert "--private" not in plain
+    assert "ludvart serve --private" in private
+    print("backend argv carries --private: OK")
+
+
 def test_ssh_backend_argv():
     argv = ssh_backend_argv("me@box", "/opt/ludvart")
     assert argv[0] == "ssh"
@@ -203,6 +213,7 @@ def main():
     test_parse_backend_spec()
     test_parse_backend_spec_rejects_bad()
     test_local_backend_argv()
+    test_backend_argv_carries_private_mode()
     test_ssh_backend_argv()
     test_ssh_backend_argv_forwards_ports()
     test_forward_port_bind_probe()
