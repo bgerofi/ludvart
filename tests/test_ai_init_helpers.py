@@ -281,6 +281,47 @@ def test_ctrl_n_toggles_the_message_numbers():
     print("Ctrl-N toggles the message numbers: OK")
 
 
+def test_reconnect_restarts_the_backend_from_the_client_side():
+    # The backend is the thing being killed, so /reconnect must never be
+    # forwarded to it; it runs here, on the client's action thread.
+    r, actions, asks = make_ludvart()
+
+    class _FakeBackendClient:
+        def __init__(self):
+            self.restarts = 0
+            self.forwarded = []
+
+        def restart(self, host):
+            self.restarts += 1
+            return "Reconnected. Model test verified."
+
+        def command(self, line, host, payload=None):
+            self.forwarded.append(line)
+
+    fake = _FakeBackendClient()
+    r._backend_client = fake
+    r._end_wait = lambda: None
+    submit(r, "/reconnect")
+
+    assert fake.restarts == 1, fake.restarts
+    assert fake.forwarded == [], fake.forwarded
+    assert asks == [], asks
+    assert actions and actions[0].get("activity") == "Reconnecting", actions
+    shown = "\n".join(t for _who, t in r._panel._messages)
+    assert "Model test verified" in shown, shown
+    print("/reconnect restarts the backend from the client side: OK")
+
+
+def test_reconnect_needs_a_backend():
+    r, actions, _ = make_ludvart()
+    r._backend_client = None
+    submit(r, "/reconnect")
+    assert actions == [], actions
+    shown = "\n".join(t for _who, t in r._panel._messages)
+    assert "needs an agent backend" in shown, shown
+    print("/reconnect explains itself without a backend: OK")
+
+
 if __name__ == "__main__":
     test_init_helpers_is_deterministic()
     test_init_helpers_works_without_llm()
@@ -294,4 +335,6 @@ if __name__ == "__main__":
     test_tab_completion_completes_a_subcommand()
     test_tab_lists_the_subcommands_when_ambiguous()
     test_ctrl_n_toggles_the_message_numbers()
+    test_reconnect_restarts_the_backend_from_the_client_side()
+    test_reconnect_needs_a_backend()
     print("all init-helpers tests passed")

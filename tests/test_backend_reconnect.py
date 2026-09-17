@@ -77,6 +77,7 @@ class _LoopbackBackend:
     def __init__(self, session=None):
         self.channel, self._backend_ch = _pipe_pair()
         self._session = session
+        self.closed = False
         self._thread = threading.Thread(
             target=lambda: serve(
                 self._backend_ch, llm=_FakeBackendLLM(), session=session
@@ -90,6 +91,7 @@ class _LoopbackBackend:
         pass
 
     def close(self):
+        self.closed = True
         try:
             self.channel.close()
         except Exception:
@@ -221,11 +223,68 @@ def test_reconnect_restores_the_previous_session():
     print("reconnect restores the previous session's transcript: OK")
 
 
+def test_restart_kills_the_backend_and_reports_the_verified_model():
+    spawned = []
+
+    def spawn():
+        b = _LoopbackBackend()
+        spawned.append(b)
+        return b
+
+    reconnector = BackendReconnector(spawn)
+    reconnector.connect()
+    old = spawned[0]
+
+    host = RecordingHost()
+    client = BackendClient(reconnector.channel, reconnector=reconnector)
+    result = client.restart(host)
+
+    assert len(spawned) == 2, "restart should spawn a fresh backend"
+    assert old.closed, "restart should shut the previous backend down"
+    assert "Reconnecting" in host.activities
+    assert any("restarting the backend" in i for i in host.infos), host.infos
+    assert "verified" in result, result
+    # The client talks to the new backend, not the corpse of the old one.
+    assert BackendClient(client._channel).ask("go", "SNAP", host).startswith("done (")
+
+    reconnector.close()
+    for b in spawned:
+        b.close()
+    print("restart respawns the backend and reports its model: OK")
+
+
+def test_restart_reports_a_model_that_failed_verification():
+    class _Reconnector:
+        label = "gpt-5 (copilot)"
+        verified = False
+        verify_error = "401 unauthorized"
+        needs_setup = False
+
+        def reconnect(self, notify, host, *, reason="backend connection lost"):
+            notify(f"{reason}; reconnecting...")
+            return object()
+
+    host = RecordingHost()
+    result = BackendClient(object(), reconnector=_Reconnector()).restart(host)
+    assert "failed verification" in result and "401 unauthorized" in result, result
+    print("restart surfaces a failed model verification: OK")
+
+
+def test_restart_without_a_backend_says_so():
+    host = RecordingHost()
+    result = BackendClient(object()).restart(host)  # no reconnector
+    assert "No backend process" in result, result
+    print("restart without a backend explains itself: OK")
+
+
 def main():
     test_ask_retries_after_a_dropped_connection()
     test_no_reconnector_propagates_the_drop()
     test_reconnector_respawns_and_serves_next_turn()
     test_reconnect_restores_the_previous_session()
+    test_restart_kills_the_backend_and_reports_the_verified_model()
+    test_restart_reports_a_model_that_failed_verification()
+    test_restart_without_a_backend_says_so()
     print("\nALL backend reconnect tests passed.")
 
 

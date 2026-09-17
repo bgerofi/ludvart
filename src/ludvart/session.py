@@ -554,6 +554,7 @@ SLASH_COMMANDS: dict[str, list[str]] = {
     "model": ["add", "list", "remove", "use"],
     "perf": ["dump", "summary"],
     "profile": ["add", "delete", "list", "use"],
+    "reconnect": [],
     "revoke_approval": [],
     "session": ["delete", "fork", "list", "load", "new", "rename"],
 }
@@ -571,6 +572,11 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
         "/init_helpers",
         "Install or verify ~/.ludvart/bin/ludvart_helper on the foreground host "
         "(for precise file read/edit/search).",
+    ),
+    (
+        "/reconnect",
+        "Restart the agent backend process and re-verify its model, as at "
+        "startup. The conversation is restored from the last saved turn.",
     ),
     (
         "/mcp_refresh",

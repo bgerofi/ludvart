@@ -1559,6 +1559,8 @@ class Ludvart:
             return
         if cmd == "init_helpers":
             self._cmd_init_helpers()
+        elif cmd == "reconnect":
+            self._cmd_reconnect()
         elif cmd == "perf":
             self._cmd_perf(args)
         elif cmd == "revoke_approval":
@@ -1568,6 +1570,27 @@ class Ludvart:
         else:
             panel.add_system(f"Unknown command: /{cmd or ''}")
         self._render_split()
+
+    def _cmd_reconnect(self) -> None:
+        """Handle ``/reconnect``: restart the backend and re-verify its model."""
+        panel = self._panel
+        if panel is None:
+            return
+        if self._backend_client is None:
+            panel.add_system("/reconnect needs an agent backend (not in --no-llm).")
+            return
+        if panel.thinking:
+            panel.add_system("Busy; cancel the turn first, then /reconnect.")
+            return
+        host = _ClientTerminalHost(self)
+
+        def worker() -> str:
+            try:
+                return self._backend_client.restart(host)
+            finally:
+                self._end_wait()
+
+        self._start_action(worker, activity="Reconnecting")
 
     def _cmd_help(self) -> None:
         """Handle ``/help``: list the internal panel commands and what they do."""

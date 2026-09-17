@@ -89,14 +89,18 @@ class BackendReconnector:
         return self._transport.channel if self._transport is not None else None
 
     def reconnect(
-        self, notify: Callable[[str], None], host: TerminalHost
+        self,
+        notify: Callable[[str], None],
+        host: TerminalHost,
+        *,
+        reason: str = "backend connection lost",
     ) -> FrameChannel:
         """Respawn the backend, restore the session, and return a live channel.
 
         Retries the spawn with backoff. Raises :class:`ConnectionError` if the
         backend cannot be brought back.
         """
-        notify("backend connection lost; reconnecting...")
+        notify(f"{reason}; reconnecting...")
         # The session to restore is the one we were on before the drop; the
         # respawned backend's own HELLO carries a fresh, empty session id, so
         # capture the target now (connect() overwrites self.session_id).
@@ -243,6 +247,29 @@ class BackendClient:
                 f"expected backend response {call_id!r}, got {msg_type(msg)!r}"
             )
         return msg.get("result")
+
+    def restart(self, host: TerminalHost) -> str:
+        """Shut the backend down and bring it back, then report its model.
+
+        The same path a dropped link takes, but asked for rather than reacted
+        to, so the respawned backend's verification is reported the way startup
+        does instead of going by unremarked. ``Transport.close`` escalates to
+        SIGKILL, so a wedged backend is taken down either way.
+        """
+        if self._reconnector is None:
+            return "No backend process to restart."
+        host.set_activity("Reconnecting")
+        self._channel = self._reconnector.reconnect(
+            notify=host.add_info, host=host, reason="restarting the backend"
+        )
+        label = self._reconnector.label or "backend"
+        host.set_model(label)
+        if self._reconnector.needs_setup:
+            return "Reconnected. No model is registered yet; use /model add."
+        if self._reconnector.verified:
+            return f"Reconnected. Model {label} verified."
+        err = self._reconnector.verify_error or "unknown error"
+        return f"Reconnected, but {label} failed verification: {err}"
 
     def _run(self, attempt: Callable[[], object], host: TerminalHost):
         """Run ``attempt``; on a dropped connection, reconnect once and retry."""
