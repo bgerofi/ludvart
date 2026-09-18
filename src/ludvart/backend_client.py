@@ -94,9 +94,11 @@ class BackendReconnector:
         host: TerminalHost,
         *,
         reason: str = "backend connection lost",
+        pending: str | None = None,
     ) -> FrameChannel:
         """Respawn the backend, restore the session, and return a live channel.
 
+        ``pending`` is the question that was in flight when the link dropped.
         Retries the spawn with backoff. Raises :class:`ConnectionError` if the
         backend cannot be brought back.
         """
@@ -127,19 +129,26 @@ class BackendReconnector:
         else:
             raise ConnectionError(f"could not reconnect to backend: {last_exc}")
         notify(f"reconnected to backend ({self.label})")
-        self._restore_session(target_session, host, notify)
+        self._restore_session(target_session, host, notify, pending)
         return self.channel
 
     def _restore_session(
-        self, target: str | None, host: TerminalHost, notify: Callable[[str], None]
+        self,
+        target: str | None,
+        host: TerminalHost,
+        notify: Callable[[str], None],
+        pending: str | None = None,
     ) -> None:
         """Reload the last saved session so the conversation survives a respawn."""
-        if not target:
-            return
-        notify(f"restoring session {target}...")
-        BackendClient(self.channel).command(f"session load {target}", host)
-        # We are now on the restored session again.
-        self.session_id = target
+        if target:
+            notify(f"restoring session {target}...")
+            BackendClient(self.channel).command(f"session load {target}", host)
+            # We are now on the restored session again.
+            self.session_id = target
+        if pending:
+            # The save predates the question that was in flight, so restoring it
+            # wipes that question off the panel unless it is put back here.
+            host.add_user(pending)
 
     def close(self) -> None:
         if self._transport is not None:
@@ -175,7 +184,7 @@ class BackendClient:
             )
             return self._pump(host).get("text", "")
 
-        return self._run(attempt, host)
+        return self._run(attempt, host, pending=question)
 
     def cancel(self) -> None:
         """Ask the backend to abandon the in-flight turn (steer or cancel).
@@ -271,7 +280,13 @@ class BackendClient:
         err = self._reconnector.verify_error or "unknown error"
         return f"Reconnected, but {label} failed verification: {err}"
 
-    def _run(self, attempt: Callable[[], object], host: TerminalHost):
+    def _run(
+        self,
+        attempt: Callable[[], object],
+        host: TerminalHost,
+        *,
+        pending: str | None = None,
+    ):
         """Run ``attempt``; on a dropped connection, reconnect once and retry."""
         try:
             return attempt()
@@ -280,7 +295,7 @@ class BackendClient:
                 raise
             host.set_activity("Reconnecting")
             self._channel = self._reconnector.reconnect(
-                notify=host.add_info, host=host
+                notify=host.add_info, host=host, pending=pending
             )
             return attempt()
 

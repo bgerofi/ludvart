@@ -58,6 +58,9 @@ class TerminalHost(ABC):
         """Add a system line that is clipped, not wrapped, to the display width."""
         self.add_system(text)
 
+    def add_user(self, text: str) -> None:
+        """Append a user turn to the transcript. Defaults to showing nothing."""
+
     def set_model(self, label: str) -> None:
         """Update the displayed active-model label (e.g. after ``/model use``)."""
         # Default: nothing to display.

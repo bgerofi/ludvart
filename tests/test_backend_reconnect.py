@@ -39,6 +39,7 @@ class RecordingHost(TerminalHost):
         self.activities = []
         self.infos = []
         self.transcripts = []
+        self.users = []
 
     def snapshot(self):
         return "CLIENT-SCREEN"
@@ -61,6 +62,9 @@ class RecordingHost(TerminalHost):
 
     def set_transcript(self, messages):
         self.transcripts.append(messages)
+
+    def add_user(self, text):
+        self.users.append(text)
 
 
 def _pipe_pair():
@@ -121,9 +125,11 @@ class _StubReconnector:
         self._new = new_channel
         self.calls = 0
         self.session_id = None
+        self.pending = []
 
-    def reconnect(self, notify, host):
+    def reconnect(self, notify, host, *, reason="backend connection lost", pending=None):
         self.calls += 1
+        self.pending.append(pending)
         notify("stub reconnecting...")
         return self._new
 
@@ -277,6 +283,51 @@ def test_restart_without_a_backend_says_so():
     print("restart without a backend explains itself: OK")
 
 
+def test_the_in_flight_question_survives_the_session_restore():
+    with _tmp_sessions():
+        # The saved session predates the question that was in flight.
+        saved = SessionStore.create_new()
+        saved.save(
+            [("you", "earlier question"), ("ludvart", "earlier answer")],
+            [{"role": "user", "content": "earlier question"}],
+            provider="custom",
+        )
+
+        def spawn():
+            return _LoopbackBackend(session=SessionStore.create_new())
+
+        reconnector = BackendReconnector(spawn)
+        reconnector.connect()
+        reconnector.session_id = saved.session_id
+
+        host = RecordingHost()
+        reconnector.reconnect(
+            notify=lambda _m: None, host=host, pending="what I just asked"
+        )
+
+        assert host.transcripts, "reconnect should restore + push a transcript"
+        assert [m[1] for m in host.transcripts[-1]] == [
+            "earlier question",
+            "earlier answer",
+        ], host.transcripts[-1]
+        assert host.users == ["what I just asked"], host.users
+        reconnector.close()
+    print("the in-flight question survives the session restore: OK")
+
+
+def test_ask_puts_the_dropped_question_back_on_the_panel():
+    good = _LoopbackBackend()
+    assert good.channel.recv()["type"] == "hello"
+    stub = _StubReconnector(good.channel)
+
+    host = RecordingHost()
+    BackendClient(_DeadChannel(), reconnector=stub).ask("do it", "SNAP", host)
+
+    assert stub.pending == ["do it"], stub.pending
+    good.close()
+    print("ask hands the dropped question to the reconnect: OK")
+
+
 def main():
     test_ask_retries_after_a_dropped_connection()
     test_no_reconnector_propagates_the_drop()
@@ -285,6 +336,8 @@ def main():
     test_restart_kills_the_backend_and_reports_the_verified_model()
     test_restart_reports_a_model_that_failed_verification()
     test_restart_without_a_backend_says_so()
+    test_the_in_flight_question_survives_the_session_restore()
+    test_ask_puts_the_dropped_question_back_on_the_panel()
     print("\nALL backend reconnect tests passed.")
 
 
