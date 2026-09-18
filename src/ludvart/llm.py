@@ -824,23 +824,26 @@ def _first_positive_int(obj: Any, *names: str) -> int:
     return 0
 
 
-def _httpx_timeout(read_timeout: float) -> Any:
-    """Build an ``httpx.Timeout`` with a short connect but a long read timeout.
+def _sdk_timeout(sdk: Any, read_timeout: float) -> Any:
+    """Build ``sdk``'s own ``Timeout`` with a short connect but a long read.
 
     Passing a single float to the OpenAI/Anthropic SDKs applies it to *every*
     phase, including ``connect`` -- so a healthy but slow model (a long
     time-to-first-token, common for reasoning models behind the Copilot gateway)
     is indistinguishable from an unreachable endpoint, and both fail at the same
     short deadline. Splitting them lets a dead endpoint fail fast (``connect``)
-    while a slow generation is tolerated (``read``/``write``/``pool``). Returns
-    the bare float if ``httpx`` is somehow unavailable.
+    while a slow generation is tolerated (``read``/``write``/``pool``).
+
+    The class has to come from the SDK: they vendor different HTTP stacks (the
+    Anthropic SDK moved to ``httpx2`` and rejects an ``httpx.Timeout``), and
+    each re-exports the one it will accept. Returns the bare float if it does
+    not.
     """
-    try:
-        import httpx
-    except ImportError:  # pragma: no cover - httpx ships with the SDKs
+    timeout_cls = getattr(sdk, "Timeout", None)
+    if timeout_cls is None:  # pragma: no cover - every supported SDK exports it
         return read_timeout
     connect = min(read_timeout, DEFAULT_CONNECT_TIMEOUT)
-    return httpx.Timeout(read_timeout, connect=connect)
+    return timeout_cls(read_timeout, connect=connect)
 
 
 class LLMClient:
@@ -1136,6 +1139,7 @@ class OpenAIClient(LLMClient):
                  max_retries: int = DEFAULT_MAX_RETRIES) -> None:
         super().__init__(config, timeout, max_retries)
         try:
+            import openai
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise LLMError("the 'openai' package is required but not installed") from exc
@@ -1148,7 +1152,7 @@ class OpenAIClient(LLMClient):
         # dead endpoint failing fast while tolerating slow (reasoning) models.
         self._client = OpenAI(
             api_key=config.api_key, base_url=base_url,
-            timeout=_httpx_timeout(timeout), max_retries=0,
+            timeout=_sdk_timeout(openai, timeout), max_retries=0,
         )
         self._chat_token_limit_param = "max_tokens"
         self._chat_tools_disable_reasoning = False
@@ -1622,6 +1626,7 @@ class AnthropicClient(LLMClient):
                  max_retries: int = DEFAULT_MAX_RETRIES) -> None:
         super().__init__(config, timeout, max_retries)
         try:
+            import anthropic
             from anthropic import Anthropic
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise LLMError(
@@ -1639,7 +1644,7 @@ class AnthropicClient(LLMClient):
         # dead endpoint failing fast while tolerating slow (reasoning) models.
         self._client = Anthropic(
             api_key=config.api_key, base_url=base_url,
-            timeout=_httpx_timeout(timeout), max_retries=0,
+            timeout=_sdk_timeout(anthropic, timeout), max_retries=0,
         )
 
     def detect_context_window(self) -> int:

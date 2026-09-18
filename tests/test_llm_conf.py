@@ -11,7 +11,7 @@ Run:
 import os
 
 from ludvart.llm import _getvar, _load_conf, _read_provider, resolve_config
-from ludvart.llm import DEFAULT_CONNECT_TIMEOUT, _httpx_timeout
+from ludvart.llm import DEFAULT_CONNECT_TIMEOUT, _sdk_timeout
 
 
 def _write(path, text):
@@ -115,19 +115,25 @@ def test_resolve_config_uses_conf_file(tmp):
     print("resolve_config uses conf file: OK")
 
 
-def test_httpx_timeout_splits_connect_and_read():
+def test_sdk_timeout_splits_connect_and_read():
     # A long request timeout must stay as the read timeout, while connect is
     # capped short so a dead endpoint fails fast instead of after the full read.
-    t = _httpx_timeout(120.0)
-    assert t.read == 120.0
-    assert t.write == 120.0
-    assert t.pool == 120.0
-    assert t.connect == DEFAULT_CONNECT_TIMEOUT
-    # A timeout shorter than the connect cap is used for connect too.
-    short = _httpx_timeout(5.0)
-    assert short.read == 5.0
-    assert short.connect == 5.0
-    print("httpx timeout splits connect/read: OK")
+    # Each SDK vendors its own HTTP stack, so the class must come from the SDK.
+    import anthropic
+    import openai
+
+    for sdk in (openai, anthropic):
+        t = _sdk_timeout(sdk, 120.0)
+        assert isinstance(t, sdk.Timeout), (sdk.__name__, type(t))
+        assert t.read == 120.0
+        assert t.write == 120.0
+        assert t.pool == 120.0
+        assert t.connect == DEFAULT_CONNECT_TIMEOUT
+        # A timeout shorter than the connect cap is used for connect too.
+        short = _sdk_timeout(sdk, 5.0)
+        assert short.read == 5.0
+        assert short.connect == 5.0
+    print("sdk timeout splits connect/read: OK")
 
 
 if __name__ == "__main__":
@@ -138,5 +144,5 @@ if __name__ == "__main__":
         test_getvar_env_overrides_file()
         test_read_provider_from_file_and_override()
         test_resolve_config_uses_conf_file(d)
-    test_httpx_timeout_splits_connect_and_read()
+    test_sdk_timeout_splits_connect_and_read()
     print("\nALL llm.conf tests passed.")

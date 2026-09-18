@@ -6,6 +6,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# The Python ludvart is built and run on. Override to test another version.
+PYTHON_VERSION="${LUDVART_PYTHON_VERSION:-3.12}"
+
 # Ensure uv is available. If it isn't on PATH, bootstrap a project-local copy
 # under ./.uv using the official installer instead of asking the user to do it.
 if ! command -v uv >/dev/null 2>&1; then
@@ -27,13 +30,31 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
+echo "==> Installing CPython $PYTHON_VERSION with uv"
+# Ludvart runs on an interpreter uv manages, never the host's: a system python
+# can be too old, patched oddly, or replaced under us by a distro update.
+# --managed-python makes uv download one instead of adopting what is on PATH.
+uv python install --managed-python "$PYTHON_VERSION"
+# --system --no-project so an existing .venv is not what gets reported back:
+# we are asking where the managed interpreter lives, not what is in use here.
+MANAGED_PY="$(uv python find --managed-python --system --no-project "$PYTHON_VERSION")"
+echo "    using $MANAGED_PY"
+
 echo "==> Creating virtual environment (.venv)"
 # Reuse an existing .venv (uv would otherwise prompt interactively, which hangs
-# non-interactive runs). The install step below repairs/updates it regardless.
+# non-interactive runs), but only if it is built on the interpreter above; one
+# left over from a host python would defeat the point.
 if [[ -d .venv ]]; then
-    echo "    .venv already exists; reusing it."
-else
-    uv venv
+    if [[ "$(readlink -f .venv/bin/python 2>/dev/null || true)" \
+          == "$(readlink -f "$MANAGED_PY")" ]]; then
+        echo "    .venv already uses the managed interpreter; reusing it."
+    else
+        echo "    .venv is built on a different interpreter; recreating it."
+        rm -rf .venv
+    fi
+fi
+if [[ ! -d .venv ]]; then
+    uv venv --managed-python --python "$MANAGED_PY"
 fi
 
 # Point uv (and our verification below) unambiguously at this .venv, regardless
