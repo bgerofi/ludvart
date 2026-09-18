@@ -972,7 +972,8 @@ class Ludvart:
             return
         panel.add_system(
             f"Resumed a turn that waited {_duration(away)} while the panel was "
-            "hidden. Nothing was typed into the terminal in the meantime."
+            "hidden. The agent typed nothing into the terminal while you had "
+            "it; whatever you did in there stands."
         )
         panel.thinking = True
         self._panel_hidden_at = None

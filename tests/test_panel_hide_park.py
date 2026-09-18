@@ -167,7 +167,7 @@ def test_the_user_is_told_the_turn_was_picked_back_up():
     relay._panel = None
     said = open_again(relay)
     assert any("1m15s" in t for t in said), said
-    assert any("Nothing was typed" in t for t in said), said
+    assert any("The agent typed nothing" in t for t in said), said
     assert relay._panel.thinking is True, "the spinner never restarted"
     print("the user is told the turn was picked back up: OK")
 
