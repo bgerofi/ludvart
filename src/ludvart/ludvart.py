@@ -57,7 +57,7 @@ from .models import PROVIDER_MENU, SERVICE_PROMPT
 # Default prefix: Ctrl-G (0x07). Commands:
 #   <prefix> s          open the scrollback viewer
 #   <prefix> a          open the AI panel (same as the summon key)
-#   <prefix> o          send a literal summon byte (Ctrl-O) to the child
+#   <prefix> o          send a literal summon byte (the AI panel key) to the child
 #   <prefix> <prefix>   send a literal prefix byte to the child
 DEFAULT_PREFIX = b"\x07"  # Ctrl-G
 
@@ -71,10 +71,28 @@ _BACKEND_COMMANDS = frozenset(
 )
 
 # In addition to the prefix commands, a single dedicated "summon" key opens the
-# AI panel in one keystroke. Ctrl-O (0x0F) is used because screen (Ctrl-A) and
-# tmux (Ctrl-B) leave it alone, so it works even when ludvart runs inside them.
-# To send a literal Ctrl-O to the child, use ``<prefix> o``.
-DEFAULT_SUMMON = b"\x0f"  # Ctrl-O
+# AI panel in one keystroke. Ctrl-O (0x0F) is the default because screen (Ctrl-A)
+# and tmux (Ctrl-B) leave it alone, so it works even when ludvart runs inside
+# them, and readline only binds it to operate-and-get-next. To send a literal
+# summon byte to the child, use ``<prefix> o``.
+#
+# The alternatives are deliberately few. Most control bytes are claimed by the
+# tty driver (^C ^D ^H ^I ^J ^M ^Z ^[ ^\\), by flow control (^S ^Q), or by the
+# shell's line editor (^A ^B ^E ^F ^K ^L ^N ^P ^R ^U ^V ^W ^Y), and the few that
+# are left over are awkward to type on a non-US keyboard. Note ^G is ludvart's
+# own default prefix, so choosing it means moving ``--prefix`` too.
+AGENT_HOTKEYS: dict[str, bytes] = {
+    "ctrl-o": b"\x0f",
+    "ctrl-t": b"\x14",
+    "ctrl-g": b"\x07",
+    "ctrl-]": b"\x1d",
+}
+DEFAULT_SUMMON = AGENT_HOTKEYS["ctrl-o"]
+
+
+def hotkey_label(key: bytes) -> str:
+    """Render a control byte as ``^X`` for the panel's hint line."""
+    return "^" + chr(key[0] + 0x40)
 
 # Bracketed paste: while the AI panel is open we enable it so the terminal wraps
 # pasted text (incl. mouse/middle-click paste) in these markers. That lets us
@@ -302,8 +320,9 @@ class Ludvart:
         Ctrl-G. Pressing it twice sends a literal prefix byte to the child.
     summon:
         The single-byte key that opens the AI panel in one keystroke. Defaults
-        to Ctrl-O, which screen/tmux leave alone. Use ``<prefix> o`` to send a
-        literal summon byte to the child.
+        to Ctrl-O, which screen/tmux leave alone; see :data:`AGENT_HOTKEYS` for
+        the alternatives. Use ``<prefix> o`` to send a literal summon byte to
+        the child.
     llm:
         An optional, already-verified LLM client. When ``None``, ludvart runs as a
         plain relay with AI features disabled.
@@ -775,7 +794,7 @@ class Ludvart:
             # Doubled prefix -> send a literal prefix byte to the child.
             self._write_all(self._master_fd, self.prefix)
         elif byte in (b"o", b"O"):
-            # Send a literal summon byte (Ctrl-O) to the child.
+            # Send a literal summon byte (the AI panel key) to the child.
             self._write_all(self._master_fd, self.summon)
         elif byte in (b"s", b"S"):
             self._open_scrollback_viewer()
@@ -870,7 +889,7 @@ class Ludvart:
 
         ask, provider = self._ai_ask_callback()
         self._ai_ask = ask
-        self._panel = AiPanel(cols, height, provider)
+        self._panel = AiPanel(cols, height, provider, hotkey_label(self.summon))
         self._panel.restore(self._panel_messages)
         self._panel.context_pct = self._panel_context_pct
         self._panel.context_tokens = self._panel_context_tokens

@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from .ludvart import DEFAULT_PREFIX, Ludvart
+from .ludvart import AGENT_HOTKEYS, DEFAULT_PREFIX, DEFAULT_SUMMON, Ludvart
 
 
 def _default_shell() -> str:
@@ -26,6 +26,27 @@ def _parse_prefix(spec: str) -> bytes:
     raise argparse.ArgumentTypeError(
         f"invalid prefix {spec!r}; use e.g. 'C-g', 'ctrl-g', '^g', or '\\x07'"
     )
+
+
+def _parse_agent_hotkey(spec: str) -> bytes:
+    """Parse an agent hotkey spec like 'ctrl-t', 'C-t' or '^t' into a byte.
+
+    Only the keys in :data:`AGENT_HOTKEYS` are accepted: the rest of the control
+    range belongs to the tty driver or the shell's line editor, and taking one
+    of those would break the very terminal the panel sits under.
+    """
+    s = spec.strip().lower()
+    for form in ("ctrl-", "c-", "^"):
+        if s.startswith(form):
+            s = "ctrl-" + s[len(form):]
+            break
+    key = AGENT_HOTKEYS.get(s)
+    if key is None:
+        raise argparse.ArgumentTypeError(
+            f"invalid agent hotkey {spec!r}; choose one of "
+            + ", ".join(sorted(AGENT_HOTKEYS))
+        )
+    return key
 
 
 def _parse_port(spec: str) -> int:
@@ -67,6 +88,18 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_PREFIX,
         metavar="KEY",
         help="Prefix key for ludvart commands, e.g. 'C-g' (default), 'ctrl-o', '^b'.",
+    )
+    parser.add_argument(
+        "--agent-hotkey",
+        type=_parse_agent_hotkey,
+        default=DEFAULT_SUMMON,
+        metavar="KEY",
+        help=(
+            "Key that opens (and closes) the AI panel: "
+            + ", ".join(sorted(AGENT_HOTKEYS))
+            + ". Default 'ctrl-o'. Note 'ctrl-g' is the default --prefix, so "
+            "choosing it means moving --prefix as well."
+        ),
     )
     parser.add_argument(
         "--no-llm",
@@ -122,13 +155,21 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         command = [_default_shell()]
 
+    if args.agent_hotkey == args.prefix:
+        parser.error(
+            "--agent-hotkey and --prefix cannot be the same key; move one of "
+            "them (--prefix defaults to Ctrl-G)."
+        )
+
     # The agent loop always runs in a backend process; this process only ever
     # owns the terminal. A forked backend over a pipe and an SSH backend differ
     # only in how they are spawned, so there is a single code path for both.
     if args.no_llm:
         # Plain relay: no agent loop at all, so there is no backend to place.
         try:
-            return Ludvart(command, prefix=args.prefix).run()
+            return Ludvart(
+                command, prefix=args.prefix, summon=args.agent_hotkey
+            ).run()
         except KeyboardInterrupt:
             return 130
     return _run_with_backend(args, command)
@@ -171,6 +212,7 @@ def _run_with_backend(args, command: list[str]) -> int:
         return Ludvart(
             command,
             prefix=args.prefix,
+            summon=args.agent_hotkey,
             backend_channel=reconnector.channel,
             backend_label=label,
             backend_reconnector=reconnector,

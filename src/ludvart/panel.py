@@ -58,10 +58,13 @@ def _clip(text: str, width: int) -> str:
 class AiPanel:
     """State and rendering for the bottom AI interaction panel."""
 
-    def __init__(self, cols: int, height: int, provider: str = "") -> None:
+    def __init__(
+        self, cols: int, height: int, provider: str = "", summon_label: str = "^O"
+    ) -> None:
         self.cols = max(1, cols)
         self.height = height
         self.provider = provider
+        self.summon_label = summon_label
         self.editor = LineEditor()
         self.thinking = False
         # The verb shown by the animated indicator while ``thinking`` is True.
@@ -395,7 +398,7 @@ class AiPanel:
         if self.thinking:
             label += f"· {self.activity} "
         hints = (
-            "^O/Esc:close  M-Enter:newline  ^N:numbers  "
+            f"{self.summon_label}/Esc:close  M-Enter:newline  ^N:numbers  "
             "S-arrows/^Space:select  PgUp/Dn:scroll "
         )
         if self.editor.mark:
