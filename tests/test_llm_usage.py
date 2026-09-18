@@ -72,6 +72,30 @@ def test_anthropic_shape():
     print("anthropic shape: OK")
 
 
+def test_anthropic_cached_prefix_counts_as_prompt():
+    # Anthropic bills the cached prefix separately and keeps it out of
+    # input_tokens, so the whole system prompt and profile went missing from
+    # the badge -- a 30k-token prompt read as a few hundred.
+    resp = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens=997, cache_read_input_tokens=24000,
+        cache_creation_input_tokens=6200, output_tokens=708))
+    u = usage_from_response(resp, context_window=200000)
+    assert u.input_tokens == 997 + 24000 + 6200, u
+    assert u.total_tokens == 997 + 24000 + 6200 + 708, u
+    print("anthropic cached prefix counts as prompt: OK")
+
+
+def test_openai_cached_tokens_are_not_double_counted():
+    # OpenAI reports its cached count *inside* prompt_tokens (and nests it), so
+    # the Anthropic fix must not add anything here.
+    resp = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=120, completion_tokens=30, total_tokens=150,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=100)))
+    u = usage_from_response(resp, context_window=128000)
+    assert u.input_tokens == 120, u
+    print("openai cached tokens are not double counted: OK")
+
+
 def test_google_shape():
     resp = SimpleNamespace(usage_metadata=SimpleNamespace(
         prompt_token_count=300, candidates_token_count=60,
@@ -242,6 +266,8 @@ if __name__ == "__main__":
     test_known_context_window_claude4_is_1m()
     test_openai_shape()
     test_anthropic_shape()
+    test_anthropic_cached_prefix_counts_as_prompt()
+    test_openai_cached_tokens_are_not_double_counted()
     test_google_shape()
     test_dict_shape()
     test_missing_usage_returns_none()

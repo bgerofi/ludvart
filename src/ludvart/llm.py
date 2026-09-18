@@ -143,6 +143,12 @@ def usage_from_response(resp: Any, context_window: int = 0) -> Usage | None:
     if block is None:
         return None
     inp = _get(block, "input_tokens", "prompt_tokens", "prompt_token_count")
+    # Anthropic reports the cached prefix in its own fields and leaves it out of
+    # input_tokens, so a cached prompt reads as a few hundred tokens unless the
+    # two are added back. OpenAI and Google count theirs inside the prompt total
+    # already, and neither uses these names, so nothing is counted twice.
+    inp += _get(block, "cache_read_input_tokens")
+    inp += _get(block, "cache_creation_input_tokens")
     out = _get(
         block, "output_tokens", "completion_tokens", "candidates_token_count"
     )
