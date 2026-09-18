@@ -14,7 +14,9 @@ from ludvart.panel import AiPanel  # noqa: E402
 from ludvart.ludvart import Ludvart  # noqa: E402
 
 
-PROMPT = "LLM request in progress: (a)bort & close  (c)ontinue  (s)teer"
+PROMPT = (
+    "LLM request in progress: (a)bort & close  (c)ontinue  (s)teer  (h)ide & keep"
+)
 
 
 class _FakeBackendClient:

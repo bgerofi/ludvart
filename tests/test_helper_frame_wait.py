@@ -120,6 +120,7 @@ def test_a_cancelled_turn_stops_waiting():
 def make_injector(screen, idle=0.2, emits=None):
     """A relay where typing the helper line makes the frame appear, as it does."""
     relay = make_relay(texts=[screen], idle=idle)
+    relay._panel = object()  # open, so the injection is not parked
     relay._inject_approval_all = True
     relay._master_fd = -1
 

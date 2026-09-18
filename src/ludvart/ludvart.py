@@ -95,6 +95,14 @@ def hotkey_label(key: bytes) -> str:
     """Render a control byte as ``^X`` for the panel's hint line."""
     return "^" + chr(key[0] + 0x40)
 
+
+def _duration(seconds: float) -> str:
+    """A rough, readable length of time, e.g. ``12s`` or ``4m10s``."""
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole}s"
+    return f"{whole // 60}m{whole % 60:02d}s"
+
 # Bracketed paste: while the AI panel is open we enable it so the terminal wraps
 # pasted text (incl. mouse/middle-click paste) in these markers. That lets us
 # insert a paste verbatim without its embedded newlines submitting the prompt.
@@ -361,6 +369,12 @@ class Ludvart:
     INJECT_CHUNK_BYTES = 256
     INJECT_CHUNK_PAUSE = 0.01
 
+    #: How long a turn parked behind a hidden panel waits to be let back in
+    #: before it gives up. Long enough to cover fixing whatever the panel was
+    #: hidden for, short enough that a forgotten turn does not sit on a thread
+    #: (and a model's context) indefinitely.
+    PARK_MAX_WAIT = 900.0
+
     #: Cap (seconds) on waiting for the helper install to report its result.
     HELPER_INIT_MAX_WAIT = 90.0
 
@@ -549,6 +563,12 @@ class Ludvart:
         # the actual screen/tmux tab title still updates correctly. This buffer
         # holds a partial sequence split across reads.
         self._title_carry = b""
+
+        # When the panel was hidden with a turn still standing, and the reason
+        # a parked turn was dropped while nobody was looking. Both are read on
+        # the next open, which is the first chance to say anything at all.
+        self._panel_hidden_at: float | None = None
+        self._park_expired: str | None = None
 
         # How many ludvart_helper END frames have gone past on the child's
         # output, and the partial one split across the last read. Lets a tool
@@ -915,6 +935,7 @@ class Ludvart:
         self._confirm_close = False
         self._panel_pasting = False
         self._panel_pastebuf = bytearray()
+        self._resume_hidden_turn()
 
         self._apply_split_size()
         self._compositor = Compositor(rows, cols)
@@ -927,6 +948,34 @@ class Ludvart:
             self._split_loop()
         finally:
             self._leave_split()
+
+    def _resume_hidden_turn(self) -> None:
+        """Pick a parked turn back up, or report that it did not survive.
+
+        The spinner state has to be restored along with it: :meth:`_split_loop`
+        only polls for a finished reply while the panel says it is thinking, so
+        a turn resumed without it would run to completion and deliver nothing.
+        """
+        panel = self._panel
+        if panel is None:
+            return
+        if self._park_expired is not None:
+            panel.add_system(self._park_expired)
+            self._park_expired = None
+            self._panel_hidden_at = None
+            return
+        if self._panel_hidden_at is None:
+            return
+        away = time.monotonic() - self._panel_hidden_at
+        self._panel_hidden_at = None
+        if not self._llm_request_in_flight:
+            return
+        panel.add_system(
+            f"Resumed a turn that waited {_duration(away)} while the panel was "
+            "hidden. Nothing was typed into the terminal in the meantime."
+        )
+        panel.thinking = True
+        self._panel_hidden_at = None
 
     def _maybe_start_backend_setup(self) -> None:
         """Run the guided registration when the backend has no model yet.
@@ -1165,7 +1214,7 @@ class Ludvart:
                 self._confirm_close = True
                 panel.confirm_prompt = (
                     "LLM request in progress: (a)bort & close  (c)ontinue  "
-                    "(s)teer"
+                    "(s)teer  (h)ide & keep"
                 )
             return
         self._panel_closing = True
@@ -1174,8 +1223,9 @@ class Ludvart:
         """Answer the in-flight request close prompt.
 
         ``a`` cancels the request and closes the panel; ``c`` (or Esc / Ctrl-C)
-        keeps it open; ``s`` collects a steering instruction. Any other key
-        leaves the prompt pending.
+        keeps it open; ``s`` collects a steering instruction; ``h`` gives the
+        terminal back without throwing the turn away. Any other key leaves the
+        prompt pending.
         """
         if data in (b"a", b"A"):
             self._confirm_close = False
@@ -1189,6 +1239,26 @@ class Ludvart:
                 self._panel.confirm_prompt = ""
         elif data in (b"s", b"S"):
             self._enter_steer_input()
+        elif data in (b"h", b"H"):
+            self._hide_panel()
+
+    def _hide_panel(self) -> None:
+        """Give the terminal back with the turn left standing.
+
+        Hiding the panel is how the user reaches a keyboard the agent is using
+        -- most often to Ctrl-C something that has wedged -- so the turn is kept
+        rather than thrown away. It does not keep *working*, though: two writers
+        on one terminal would interleave the user's keystrokes with injected
+        command lines, so the turn parks at the next thing it would type (see
+        :meth:`_await_inject_approval`) and waits to be let back in. Whatever is
+        already in flight is allowed to finish, because a request to the model
+        and a wait on a command that was already typed both touch nothing.
+        """
+        self._confirm_close = False
+        if self._panel is not None:
+            self._panel.confirm_prompt = ""
+        self._panel_hidden_at = time.monotonic()
+        self._panel_closing = True
 
     def _enter_steer_input(self) -> None:
         """Replace the close prompt with an editable steering input line."""
@@ -1365,7 +1435,17 @@ class Ludvart:
             self._resolve_inject_approval(False)
 
     def _await_inject_approval(self, text: str) -> bool:
-        """Block the inject_input tool call until the user answers y/n/a."""
+        """Block the inject_input tool call until the user answers y/n/a.
+
+        Also the point at which a hidden panel parks the turn. The user hid it
+        to use the terminal themselves, so nothing may be typed into it until
+        they come back -- and this is the only place ludvart types. Parking here
+        rather than refusing keeps the turn intact: it resumes mid-step when the
+        panel returns, instead of the model being told its command was declined
+        and having to reason about why.
+        """
+        if not self._await_panel():
+            return False
         if self._inject_approval_all:
             return True
         panel = self._panel
@@ -1381,6 +1461,31 @@ class Ludvart:
             if self._ask_cancel.is_set():
                 self._resolve_inject_approval(False)
                 return False
+
+    def _await_panel(self) -> bool:
+        """Park while the panel is hidden. False if the turn should give up.
+
+        An unbounded park would outlive any interest in it, so a turn nobody
+        comes back to is cancelled after PARK_MAX_WAIT and the reason kept for
+        the panel to show whenever it is next opened -- the user is not watching
+        and cannot be told now.
+        """
+        if self._panel is not None:
+            return True
+        deadline = time.monotonic() + self.PARK_MAX_WAIT
+        while self._panel is None:
+            if self._ask_cancel.is_set():
+                return False
+            if time.monotonic() >= deadline:
+                mins = self.PARK_MAX_WAIT / 60.0
+                self._park_expired = (
+                    f"The turn was dropped: the panel stayed hidden for "
+                    f"{mins:.0f} minutes with the agent waiting to continue."
+                )
+                self._cancel_ask()
+                return False
+            time.sleep(self.SETTLE_POLL)
+        return not self._ask_cancel.is_set()
 
     def _begin_wait(self, label: str) -> None:
         """Start a waiting phase (a tool run or the next model response).

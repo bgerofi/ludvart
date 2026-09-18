@@ -159,6 +159,7 @@ def make_injector():
     relay = RelayPTY.__new__(RelayPTY)
     relay.screen = PromptScreen()
     relay._partial_line_prompt = None
+    relay._panel = object()  # open, so the injection is not parked
     relay._inject_approval_all = True
     relay._master_fd = -1
     relay._write_all = lambda fd, data: None
