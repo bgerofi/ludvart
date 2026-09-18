@@ -72,7 +72,7 @@ def test_toggle_prompts_during_llm_request():
     assert r._confirm_close is True
     assert r._panel.confirm_prompt == (
         "LLM request in progress: (a)bort & close  (c)ontinue  "
-        "(s)teer  (h)ide & keep"
+        "(s)teer  (h)ide & park"
     )
     print("in-flight LLM request prompts before closing: OK")
 
@@ -153,7 +153,7 @@ def test_all_panel_close_keys_confirm_an_llm_request():
             r._panel_input(key)
         assert r._panel_closing is False, name
         assert r._confirm_close is True, name
-        assert r._panel.confirm_prompt.endswith("(h)ide & keep"), name
+        assert r._panel.confirm_prompt.endswith("(h)ide & park"), name
     print("Ctrl-O, Esc, and Ctrl-G a all confirm before closing: OK")
 
 

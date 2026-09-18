@@ -15,7 +15,7 @@ from ludvart.ludvart import Ludvart  # noqa: E402
 
 
 PROMPT = (
-    "LLM request in progress: (a)bort & close  (c)ontinue  (s)teer  (h)ide & keep"
+    "LLM request in progress: (a)bort & close  (c)ontinue  (s)teer  (h)ide & park"
 )
 
 

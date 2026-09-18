@@ -1214,7 +1214,7 @@ class Ludvart:
                 self._confirm_close = True
                 panel.confirm_prompt = (
                     "LLM request in progress: (a)bort & close  (c)ontinue  "
-                    "(s)teer  (h)ide & keep"
+                    "(s)teer  (h)ide & park"
                 )
             return
         self._panel_closing = True
