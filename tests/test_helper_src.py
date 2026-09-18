@@ -12,10 +12,14 @@ Run:
 import base64
 import hashlib
 import os
+import pty
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 
 from ludvart.helper_src import (
     LUDVART_HELPER_MD5,
@@ -530,6 +534,43 @@ def test_a_mangled_transfer_never_overwrites_a_good_helper():
     print("a mangled transfer never overwrites a good helper: OK")
 
 
+def test_an_interrupted_run_still_reports_a_frame():
+    """Ctrl-C must leave an END sentinel behind, not a traceback.
+
+    The signal goes to every process in the foreground group, so the helper is
+    hit along with the command it started. If it died there, a caller waiting
+    for exit= would wait for a frame that never comes -- which is precisely the
+    hang the wait was meant to detect. 130 is the shell's own code for it.
+    """
+    b64 = base64.b64encode(b"sleep 30").decode()
+    pid, fd = pty.fork()
+    if pid == 0:  # pragma: no cover - replaced by execv
+        with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as fh:
+            fh.write(LUDVART_HELPER_SOURCE)
+        os.execv(sys.executable, [sys.executable, fh.name, "run", "--b64", b64])
+    out = b""
+    try:
+        time.sleep(0.5)  # let the sleep actually start
+        os.killpg(pid, signal.SIGINT)
+        deadline = time.time() + 15
+        while time.time() < deadline and b"LUDVART:END" not in out:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+        _, status = os.waitpid(pid, 0)
+    finally:
+        os.close(fd)
+    text = out.decode(errors="replace")
+    assert "<<<LUDVART:END op=run exit=130>>>" in text, text
+    assert "Traceback" not in text, text
+    assert os.WIFEXITED(status), status
+    print("an interrupted run still reports a frame: OK")
+
+
 if __name__ == "__main__":
     test_asset_integrity()
     test_source_is_py36_compatible()
@@ -549,4 +590,5 @@ if __name__ == "__main__":
     test_command_is_quote_safe()
     test_install_current_and_repair()
     test_a_mangled_transfer_never_overwrites_a_good_helper()
+    test_an_interrupted_run_still_reports_a_frame()
     print("all helper_src tests passed")

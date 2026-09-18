@@ -48,6 +48,7 @@ from .session import (
     complete_slash,
     slash_candidates,
 )
+from .tools import helper_exit_code
 from .models import PROVIDER_MENU, SERVICE_PROMPT
 
 # ludvart commands are entered with a prefix key (like screen/tmux) followed by a
@@ -363,6 +364,12 @@ class Ludvart:
     #: Cap (seconds) on waiting for the helper install to report its result.
     HELPER_INIT_MAX_WAIT = 90.0
 
+    #: How long a helper call may print nothing at all before it is reported
+    #: back as still running. This is an idleness timeout, not a time limit:
+    #: any output at all restarts it, so a long build is never cut short, and
+    #: only a command that has genuinely gone quiet trips it.
+    HELPER_IDLE_TIMEOUT = 120.0
+
     #: Cap (seconds) on the checksum probe that runs before the install. Short:
     #: it is one small command, and an unanswered probe just means we transfer
     #: the payload as before.
@@ -542,6 +549,13 @@ class Ludvart:
         # the actual screen/tmux tab title still updates correctly. This buffer
         # holds a partial sequence split across reads.
         self._title_carry = b""
+
+        # How many ludvart_helper END frames have gone past on the child's
+        # output, and the partial one split across the last read. Lets a tool
+        # call wait for *its own* frame rather than for one that is still on
+        # screen from the call before it.
+        self._helper_frames = 0
+        self._frame_carry = b""
 
         # Optional raw-output capture for diagnosing display glitches. When
         # ``LUDVART_CAPTURE`` names a path, every byte read from the child (plus
@@ -2262,15 +2276,73 @@ class Ludvart:
         if not data:
             return "[ludvart] inject_input: nothing to inject (empty 'text')."
         prompt_prefix = self._injection_prompt_prefix(data.endswith((b"\r", b"\n")))
+        # Taken before the write so the frame we go on to wait for can only be
+        # the one this call produces.
+        frames_before = self._helper_frames
         try:
             self._write_all(self._master_fd, data)
         except OSError as exc:
             return f"[ludvart] inject_input failed: {exc}"
+        if args.get("no_wait"):
+            return (
+                f"Injected {len(data)} byte(s) into the terminal. NOT waited "
+                "for: the command was only just launched, so the screen below "
+                "shows its first moments and there is no exit status yet. Poll "
+                "with capture_screen to follow it, and remember the terminal "
+                "is busy until it ends.\n"
+                "<screenContext>\n"
+                f"{self._safe_snapshot() or ''}\n"
+                "</screenContext>"
+            )
+        if args.get("await_frame"):
+            return self._helper_frame_result(len(data), frames_before)
         snapshot = self._wait_for_injection_to_settle(text, prompt_prefix)
         return (
             f"Injected {len(data)} byte(s) into the terminal. The input was sent "
             "to the foreground program and its output has settled. This is the "
             "terminal screen now:\n"
+            "<screenContext>\n"
+            f"{snapshot}\n"
+            "</screenContext>"
+        )
+
+    def _helper_frame_result(self, sent: int, frames_before: int) -> str:
+        """Wait for this helper call's END frame and describe what happened."""
+        snapshot, done = self._wait_for_helper_frame(frames_before)
+        if not done:
+            return (
+                f"Injected {sent} byte(s) into the terminal. STILL RUNNING: the "
+                f"command has printed nothing for {self.HELPER_IDLE_TIMEOUT:.0f} "
+                "seconds and has not reported an exit status, so it has either "
+                "wedged or is waiting for something. It is still occupying the "
+                "terminal. Decide from the screen below: run the same command "
+                "again with background=true to keep watching it, or interrupt "
+                "it by sending '\\x03' (Ctrl-C) with inject_input, which makes "
+                "it report exit=130.\n"
+                "<screenContext>\n"
+                f"{snapshot}\n"
+                "</screenContext>"
+            )
+        code = helper_exit_code(snapshot)
+        if code == 130:
+            status = (
+                "INTERRUPTED (exit=130): it was stopped with Ctrl-C part-way "
+                "through and did not do its work. This may have been the user, "
+                "who can reach the terminal at any time. Do not assume it had "
+                "any effect, and do not simply re-run it without saying so."
+            )
+        elif code == 0:
+            status = "It finished successfully (exit=0)."
+        elif code is None:
+            status = (
+                "It finished, but its exit status has already scrolled off the "
+                "screen; read the output below rather than assuming success."
+            )
+        else:
+            status = f"It FAILED (exit={code})."
+        return (
+            f"Injected {sent} byte(s) into the terminal. The command ran to "
+            f"completion. {status} This is the terminal screen now:\n"
             "<screenContext>\n"
             f"{snapshot}\n"
             "</screenContext>"
@@ -2467,6 +2539,36 @@ class Ludvart:
                 quiet_window = min(quiet_window * 2, 2.0)
         return last_text
 
+    def _wait_for_helper_frame(self, since: int) -> tuple[str, bool]:
+        """Block until the helper prints its END frame. Returns (screen, done).
+
+        A helper call announces its own completion, so there is nothing to
+        infer: no prompt to recognise, no quiet window to guess at, no LLM
+        round-trip. Waiting on the frame is what makes run_shell_command mean
+        "the command finished" rather than "the screen stopped moving", and it
+        costs nothing to be patient.
+
+        The only cap is silence. A command that keeps printing is left alone
+        however long it takes, because output is proof it is alive; one that
+        says nothing at all for HELPER_IDLE_TIMEOUT is reported back as still
+        running, which is the only honest thing to say about it -- it may be
+        wedged, or merely slow, and the caller is better placed to judge.
+        """
+        idle_deadline = time.time() + self.HELPER_IDLE_TIMEOUT
+        last_text = self._safe_snapshot() or ""
+        while True:
+            if self._helper_frames > since:
+                return self._safe_snapshot() or last_text, True
+            if self._ask_cancel.is_set():
+                return self._safe_snapshot() or last_text, False
+            if time.time() >= idle_deadline:
+                return last_text, False
+            time.sleep(self.SETTLE_POLL)
+            text = self._safe_snapshot()
+            if text is not None and text != last_text:
+                last_text = text
+                idle_deadline = time.time() + self.HELPER_IDLE_TIMEOUT
+
     def _safe_snapshot(self) -> str | None:
         """Snapshot the screen, returning ``None`` on a transient read error."""
         try:
@@ -2607,6 +2709,7 @@ class Ludvart:
         buf = self._title_carry + data
         self._title_carry = b""
         buf = self._TITLE_SEQ.sub(b"", buf)
+        self._count_helper_frames(buf)
         # Hold back an unterminated title sequence (ESC k with no ST/BEL yet)
         # so its partial payload never reaches the model; feed it once the
         # terminator arrives in a later read. Cap the carry so a malformed
@@ -2618,6 +2721,24 @@ class Ludvart:
                 buf = buf[:idx]
         if buf:
             self.stream.feed(buf)
+
+    #: The helper closes every call with ``<<<LUDVART:END op=NAME exit=N>>>``.
+    #: Counted in the raw stream rather than on screen: a frame that has
+    #: scrolled out of the viewport still happened, and the count only ever
+    #: grows, so "did MY command finish" is a comparison against a number taken
+    #: before it was typed -- no confusion with an identical frame left over
+    #: from the previous call.
+    _HELPER_FRAME = b"<<<LUDVART:END"
+
+    #: Class-level defaults so the counter reads sanely on a bare instance.
+    _helper_frames = 0
+    _frame_carry = b""
+
+    def _count_helper_frames(self, data: bytes) -> None:
+        """Tally helper END frames as they stream past, carrying split ones."""
+        buf = self._frame_carry + data
+        self._helper_frames += buf.count(self._HELPER_FRAME)
+        self._frame_carry = buf[-(len(self._HELPER_FRAME) - 1):]
 
     def _read(self, fd: int) -> bytes | None:
         """Read from ``fd``. Return ``None`` on EOF/child-gone, else bytes."""

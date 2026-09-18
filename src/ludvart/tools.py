@@ -165,6 +165,15 @@ def builtin_tool_specs() -> list[ToolSpec]:
                 "terminal, and the result carries the screen plus the "
                 "helper's END sentinel, whose exit= is the command's real "
                 "status: read it before judging whether the command worked. "
+                "The call does not come back until that sentinel appears, so "
+                "the command has genuinely finished -- however long it takes, "
+                "as long as it keeps producing output. A command that falls "
+                "completely silent for a long stretch comes back marked as "
+                "STILL RUNNING rather than finished, and it is then your "
+                "call whether to keep waiting or to interrupt it by sending "
+                "'\\x03' (Ctrl-C) with inject_input. An interrupted command "
+                "reports exit=130, which means it was stopped part-way and "
+                "did not do its work -- not that it failed on its own. "
                 "By default PAGER and GIT_PAGER are set to 'cat' for the "
                 "command, so git, man, systemctl and friends print instead of "
                 "opening a pager that would take over the screen; pass "
@@ -194,6 +203,20 @@ def builtin_tool_specs() -> list[ToolSpec]:
                             "GIT_PAGER set to 'cat'. Defaults to true. Set "
                             "false to leave the user's paging configuration "
                             "alone."
+                        ),
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether to return as soon as the command has "
+                            "been typed instead of waiting for it to finish. "
+                            "Defaults to false. Set true only when you mean "
+                            "to watch a long run as it goes: you get the "
+                            "screen right after launch, with no exit status, "
+                            "and must call capture_screen yourself to see how "
+                            "it is getting on. The terminal stays busy until "
+                            "it ends, so a further run_shell_command would be "
+                            "typed into a shell that is not listening."
                         ),
                     },
                 },

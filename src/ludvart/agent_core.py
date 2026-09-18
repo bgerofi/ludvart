@@ -612,15 +612,24 @@ class AgentCore:
             return self.mcp.call_tool(call.name, dict(call.input))
         return f"[ludvart] unknown tool: {call.name}"
 
-    def _inject_helper_line(self, line: str) -> str:
+    def _inject_helper_line(self, line: str, *, no_wait: bool = False) -> str:
         """Type one ``ludvart_helper`` invocation into the terminal.
 
         Routed through inject_input rather than injected directly so the user's
         approval gate still fires, and still previews the decoded payload.
+        ``await_frame`` asks the terminal to wait for the helper's own END
+        sentinel: the helper says when it is done, so there is nothing to infer
+        from how the screen looks.
         """
         return self.host.run_terminal_tool(
             "inject_input",
-            {"text": line, "submit": True, "interpret_escapes": False},
+            {
+                "text": line,
+                "submit": True,
+                "interpret_escapes": False,
+                "await_frame": not no_wait,
+                "no_wait": no_wait,
+            },
         )
 
     def _tool_run_command(self, args: dict) -> str:
@@ -638,8 +647,12 @@ class AgentCore:
         no_pager = args.get("no_pager", True)
         if isinstance(no_pager, str):  # models sometimes send "false"
             no_pager = no_pager.strip().lower() not in ("false", "0", "no")
+        background = args.get("background", False)
+        if isinstance(background, str):
+            background = background.strip().lower() not in ("false", "0", "no", "")
         return self._inject_helper_line(
-            builtin.helper_run_line(command, no_pager=bool(no_pager))
+            builtin.helper_run_line(command, no_pager=bool(no_pager)),
+            no_wait=bool(background),
         )
 
     def _tool_read_file(self, args: dict) -> str:

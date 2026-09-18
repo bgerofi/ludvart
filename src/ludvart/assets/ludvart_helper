@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json
+import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json, signal
 
-VER = "0.5.1"
+VER = "0.6.0"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -148,6 +148,9 @@ run --b64 CMD
     (for a pipeline, that of the last command). It is the answer to "did this
     work?" -- a compiler, a test run or a linter that printed nothing alarming
     still failed if exit= is non-zero.
+    An interrupted command still ends with the sentinel: Ctrl-C reports
+    exit=130, whoever pressed it. So exit=130 means the command was stopped
+    part-way and did not finish its work, not that it failed on its own.
     ~/.ludvart/bin/ludvart_helper run --b64 bWFrZSB0ZXN0
 
 info
@@ -483,10 +486,38 @@ def op_search(a):
     payload = "\n".join(hits).encode()
     return emit("search", payload, 0 if hits else 1, matches=len(hits))
 
+def _child_default_signals():
+    # Undo the parent's SIG_IGN so the command itself still dies on Ctrl-C.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 def op_run(a):
     cmd = _b64(a.b64, "--b64").decode()
-    pr = subprocess.Popen(cmd, shell=True)
-    code = pr.wait()
+    # Ctrl-C reaches every process in the foreground group, the helper included.
+    # Dying here would print a traceback and no sentinel, leaving a caller that
+    # watches for exit= waiting for a frame that never comes -- so the helper
+    # ignores the signal and lets only the command take it.
+    try:
+        old = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (ValueError, OSError, RuntimeError):
+        old = None
+    try:
+        pr = subprocess.Popen(cmd, shell=True, preexec_fn=_child_default_signals)
+        while True:
+            try:
+                code = pr.wait()
+                break
+            except KeyboardInterrupt:  # lost the race to install SIG_IGN
+                continue
+    finally:
+        if old is not None:
+            try:
+                signal.signal(signal.SIGINT, old)
+            except (ValueError, OSError, RuntimeError):
+                pass
+    # Popen reports a signalled child as -N; report it the way a shell does, so
+    # exit= is always a plain number and Ctrl-C is the familiar 130.
+    if code < 0:
+        code = 128 - code
     sys.stdout.write("<<<LUDVART:END op=run exit=%d>>>\n" % code)
     sys.stdout.flush()
     return code
