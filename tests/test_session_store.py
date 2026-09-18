@@ -710,7 +710,9 @@ def test_slash_candidates():
     assert slash_candidates("/session ") == [
         "delete", "fork", "list", "load", "new", "rename",
     ]
-    assert slash_candidates("/model ") == ["add", "list", "remove", "use"]
+    assert slash_candidates("/model ") == [
+        "add", "list", "remove", "use", "verify-all",
+    ]
     assert slash_candidates("/profile ") == ["add", "delete", "list", "use"]
     assert slash_candidates("/compact ") == ["last-turn"]
     # A started but ambiguous subcommand: only the ones still reachable.

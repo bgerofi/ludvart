@@ -130,10 +130,11 @@ def _build_manager(status=None):
 
     Returns ``(manager, verify_error)``: a
     :class:`~ludvart.backend.ModelManager` whose active client is built, and the
-    verification error string (or ``None`` on success). ``status`` (optional)
-    receives progress notes -- the active model's verification, the Copilot
-    gateway launch, and each other model's verification -- so the client can show
-    startup progress the way the in-process path prints it to stderr.
+    verification error string (or ``None`` on success). Only the active model is
+    verified -- checking the rest costs a live request each and made startup
+    crawl; they stay marked unavailable until ``/model verify-all``. ``status``
+    (optional) receives progress notes so the client can show startup progress
+    the way the in-process path prints it to stderr.
     """
     from .backend import ModelManager, build_backend, verify_backend
     from .models import active_index, label, load_registry
@@ -156,49 +157,10 @@ def _build_manager(status=None):
     except Exception as exc:  # noqa: BLE001 - reported to the client, not fatal
         verify_error = str(exc)
         note(f"{label(active)}: FAILED ({exc})")
-    available = _verify_others(models, idx, note)
-    available[idx] = True
+    available = [False] * len(models)
+    available[idx] = verify_error is None
     manager = ModelManager(models, available, backend.client, backend.gateway)
     return manager, verify_error
-
-
-def _verify_others(models, active_idx, note) -> list[bool]:
-    """Verify every non-active model, reporting each via ``note``.
-
-    Direct providers get a tiny live request; Copilot models are marked available
-    when the gateway is installed and authorized (they are only truly started on
-    ``/model use``), mirroring the in-process startup check.
-    """
-    from .llm import build_client
-    from .models import is_copilot, label, registration_to_config
-
-    available = [False] * len(models)
-    for i, reg in enumerate(models):
-        if i == active_idx:
-            available[i] = True
-            continue
-        note(f"verifying {label(reg)}...")
-        if is_copilot(reg):
-            ok = _copilot_ready()
-            available[i] = ok
-            note(f"{label(reg)}: {'ok' if ok else 'unavailable'}")
-            continue
-        try:
-            client = build_client(registration_to_config(reg))
-            client.verify()
-            available[i] = True
-            note(f"{label(reg)}: ok")
-        except Exception as exc:  # noqa: BLE001 - availability probe
-            available[i] = False
-            note(f"{label(reg)}: unavailable ({exc})")
-    return available
-
-
-def _copilot_ready() -> bool:
-    """Whether a Copilot backend could start (installed + authorized)."""
-    from .gateway import copilot_authenticated, litellm_available
-
-    return litellm_available() and copilot_authenticated()
 
 
 def _manager_active_label(manager) -> str:
@@ -385,6 +347,11 @@ def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None
         for descr in manager.describe():
             emit(descr)
         emit("Use /model use <n>|<model>, add, or remove <n>|<model>.")
+    elif sub == "verify-all":
+        manager.verify_all(status=emit)
+        emit("Registered models (backend):")
+        for descr in manager.describe():
+            emit(descr)
     elif sub == "copilot-models":
         return _copilot_model_choices()
     elif sub == "use":
@@ -403,7 +370,7 @@ def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None
         else:
             _do_model_add(payload, manager, core, channel, emit)
     else:
-        emit(f"Supported: list, use, add, remove (got {sub!r}).")
+        emit(f"Supported: list, use, add, remove, verify-all (got {sub!r}).")
     return None
 
 

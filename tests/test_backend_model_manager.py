@@ -173,6 +173,32 @@ def test_remove_forbids_active():
     print("remove forbids active, allows others: OK")
 
 
+def test_verify_all_probes_the_models_startup_left_alone():
+    _install_fakes()
+    probed = []
+
+    def fake_build_client(conf):
+        probed.append(conf.model)
+        return _FakeClient(conf.name, ok=conf.model != "bad")
+
+    saved = backend.build_client
+    backend.build_client = fake_build_client
+    try:
+        m = _mgr(
+            [_reg(model="a", active=True), _reg(model="b"), _reg(model="bad")],
+            available=[True, False, False],
+        )
+        notes = []
+        m.verify_all(status=notes.append)
+    finally:
+        backend.build_client = saved
+
+    assert probed == ["b", "bad"], probed  # the model in use is not re-probed
+    assert m.available == [True, True, False], m.available
+    assert any("bad" in n and "unavailable" in n for n in notes), notes
+    print("verify-all probes the models startup left alone: OK")
+
+
 def main():
     test_describe_marks_active_and_availability()
     test_use_switches_active_and_persists()
@@ -182,6 +208,7 @@ def main():
     test_use_builds_a_client_when_the_active_model_has_none()
     test_a_failed_switch_stops_the_gateway_it_started()
     test_remove_forbids_active()
+    test_verify_all_probes_the_models_startup_left_alone()
     print("\nALL ModelManager tests passed.")
 
 

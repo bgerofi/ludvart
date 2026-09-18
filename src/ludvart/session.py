@@ -551,7 +551,7 @@ SLASH_COMMANDS: dict[str, list[str]] = {
     "mcp_auth": [],
     "mcp_login": [],
     "mcp_refresh": [],
-    "model": ["add", "list", "remove", "use"],
+    "model": ["add", "list", "remove", "use", "verify-all"],
     "perf": ["dump", "summary"],
     "profile": ["add", "delete", "list", "use"],
     "reconnect": [],
@@ -611,6 +611,11 @@ SLASH_COMMAND_HELP: list[tuple[str, str]] = [
     ("/model add", "Register a new model endpoint (guided prompts, then verify)."),
     ("/model use <n>|<model>", "Switch to another registered, available model."),
     ("/model remove <n>|<model>", "Unregister a model (not the one in use)."),
+    (
+        "/model verify-all",
+        "Probe every registered model and mark the working ones available; "
+        "startup only checks the one in use.",
+    ),
     (
         "/profile list",
         "List agent profiles with their folder and what they cost per request.",

@@ -192,6 +192,43 @@ class ModelManager:
             lines.append(f"  {i + 1}) {label(reg)}  [{', '.join(marks)}]")
         return lines
 
+    def verify_all(self, *, status: StatusFn | None = None) -> None:
+        """Probe every registered model and record which ones are usable.
+
+        Startup only checks the model in use -- verifying the whole registry
+        costs a live request per model -- so the rest stay marked unavailable
+        until this runs. A Copilot model is judged by whether the gateway is
+        installed and authorized; actually starting one is what ``use`` does.
+        """
+        from .gateway import copilot_authenticated, litellm_available
+
+        def note(msg: str) -> None:
+            if status is not None:
+                status(msg)
+
+        active = self.active_index()
+        copilot_ready: bool | None = None
+        for i, reg in enumerate(self.models):
+            if i == active and self.client is not None:
+                self.available[i] = True
+                note(f"{label(reg)}: ok (in use)")
+                continue
+            note(f"verifying {label(reg)}...")
+            if is_copilot(reg):
+                if copilot_ready is None:
+                    copilot_ready = litellm_available() and copilot_authenticated()
+                self.available[i] = copilot_ready
+                note(f"{label(reg)}: {'ok' if copilot_ready else 'unavailable'}")
+                continue
+            try:
+                build_client(registration_to_config(reg)).verify()
+            except Exception as exc:  # noqa: BLE001 - availability probe
+                self.available[i] = False
+                note(f"{label(reg)}: unavailable ({exc})")
+            else:
+                self.available[i] = True
+                note(f"{label(reg)}: ok")
+
     def use(
         self,
         index: int,
