@@ -389,16 +389,25 @@ def _handle_pick(args, manager, core) -> dict:
     if kind == "profile":
         from .profiles import load_profiles
 
-        return {
-            "items": [
-                {
-                    "label": f"{p['name']}  ({p['dir']}/)",
-                    "ref": str(i),
-                    "active": bool(p.get("active")),
-                }
-                for i, p in enumerate(load_profiles(), 1)
-            ]
-        }
+        profiles = list(load_profiles())
+        # "none" is a real argument to /profile use, so running no profile is
+        # a choice on the list rather than something you leave the list to do.
+        items = [
+            {
+                "label": "(Clear profile)",
+                "ref": "none",
+                "active": not any(p.get("active") for p in profiles),
+            }
+        ]
+        items += [
+            {
+                "label": f"{p['name']}  ({p['dir']}/)",
+                "ref": str(i),
+                "active": bool(p.get("active")),
+            }
+            for i, p in enumerate(profiles, 1)
+        ]
+        return {"items": items}
     if kind == "session":
         from .session import list_sessions
 

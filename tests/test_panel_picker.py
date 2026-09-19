@@ -326,6 +326,40 @@ def test_the_backend_numbers_sessions_from_one_and_remembers_the_list():
     print("the backend numbers sessions from one and remembers the list: OK")
 
 
+def test_the_profile_list_offers_running_without_one():
+    import ludvart.profiles as profiles_mod
+    from ludvart.server import _handle_pick
+
+    saved = profiles_mod.load_profiles
+    profiles_mod.load_profiles = lambda: [
+        {"name": "work", "dir": "work", "active": False},
+        {"name": "play", "dir": "play", "active": True},
+    ]
+    try:
+        picked = _handle_pick(["profile"], None, None)["items"]
+    finally:
+        profiles_mod.load_profiles = saved
+    assert picked[0] == {"label": "(Clear profile)", "ref": "none", "active": False}
+    # The real profiles keep the numbers /profile use already gave them.
+    assert [i["ref"] for i in picked[1:]] == ["1", "2"]
+    assert picked[2]["active"] is True
+    print("the profile list offers running without one: OK")
+
+
+def test_clearing_is_marked_current_when_no_profile_is_loaded():
+    import ludvart.profiles as profiles_mod
+    from ludvart.server import _handle_pick
+
+    saved = profiles_mod.load_profiles
+    profiles_mod.load_profiles = lambda: [{"name": "work", "dir": "work"}]
+    try:
+        picked = _handle_pick(["profile"], None, None)["items"]
+    finally:
+        profiles_mod.load_profiles = saved
+    assert picked[0]["active"] is True
+    print("clearing is marked current when no profile is loaded: OK")
+
+
 def test_an_unknown_kind_is_an_empty_list_not_a_crash():
     from ludvart.server import _handle_pick
 
@@ -356,6 +390,8 @@ def main():
     test_the_loop_waits_for_a_list_that_is_still_coming()
     test_the_backend_numbers_models_the_way_model_use_expects()
     test_the_backend_numbers_sessions_from_one_and_remembers_the_list()
+    test_the_profile_list_offers_running_without_one()
+    test_clearing_is_marked_current_when_no_profile_is_loaded()
     test_an_unknown_kind_is_an_empty_list_not_a_crash()
     print("\nALL panel picker tests passed.")
 
