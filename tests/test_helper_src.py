@@ -501,7 +501,12 @@ def test_install_current_and_repair():
         run = subprocess.run([dest, "run", "--b64", payload],
                              capture_output=True, text=True)
         assert run.returncode == 0, run.stdout
-        assert run.stdout == "hi\n<<<LUDVART:END op=run exit=0>>>\n", run.stdout
+        assert run.stdout == (
+            "<<<LUDVART:BEGIN_DISPLAY_CMD op=run>>>\necho hi\n"
+            "<<<LUDVART:END_DISPLAY_CMD op=run>>>\n"
+            "<<<LUDVART:BEGIN op=run>>>\n"
+            "hi\n<<<LUDVART:END op=run exit=0>>>\n"
+        ), run.stdout
     print("install / current / repair round-trip: OK")
 
 
@@ -534,6 +539,28 @@ def test_a_mangled_transfer_never_overwrites_a_good_helper():
     print("a mangled transfer never overwrites a good helper: OK")
 
 
+def test_a_run_says_what_it_is_running():
+    """The base64 on the command line is unreadable to whoever is watching.
+
+    Everything a run does is on the terminal for a human to see, except the one
+    thing that explains the rest: the command itself, which arrives encoded so
+    that quoting cannot corrupt it. Decoding it into an opening block gives the
+    output above the prompt something to be the output of. It gets lines of its
+    own rather than a place inside a sentinel because a command may be several
+    lines long, and a sentinel it could run off the end of would frame nothing.
+    """
+    cmd = "printf 'a b\\n'\necho \"quoted & $HOME\" >&2"
+    r = run_helper("run", "--b64", base64.b64encode(cmd.encode()).decode())
+    lines = r.stdout.splitlines()
+    assert lines[0] == "<<<LUDVART:BEGIN_DISPLAY_CMD op=run>>>", lines
+    assert lines[1:3] == cmd.splitlines(), lines
+    assert lines[3] == "<<<LUDVART:END_DISPLAY_CMD op=run>>>", lines
+    assert lines[4] == "<<<LUDVART:BEGIN op=run>>>", lines
+    # Announced before the command runs, or it would not be an announcement.
+    assert lines[5] == "a b", r.stdout
+    print("a run says what it is running: OK")
+
+
 def test_an_interrupted_run_still_reports_a_frame():
     """Ctrl-C must leave an END sentinel behind, not a traceback.
 
@@ -553,7 +580,7 @@ def test_an_interrupted_run_still_reports_a_frame():
         time.sleep(0.5)  # let the sleep actually start
         os.killpg(pid, signal.SIGINT)
         deadline = time.time() + 15
-        while time.time() < deadline and b"LUDVART:END" not in out:
+        while time.time() < deadline and b"LUDVART:END op=" not in out:
             try:
                 chunk = os.read(fd, 65536)
             except OSError:
@@ -590,5 +617,6 @@ if __name__ == "__main__":
     test_command_is_quote_safe()
     test_install_current_and_repair()
     test_a_mangled_transfer_never_overwrites_a_good_helper()
+    test_a_run_says_what_it_is_running()
     test_an_interrupted_run_still_reports_a_frame()
     print("all helper_src tests passed")

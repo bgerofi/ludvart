@@ -45,6 +45,24 @@ def test_frames_are_counted_as_they_stream_past():
     print("frames are counted as they stream past: OK")
 
 
+def test_the_display_block_is_not_a_finished_call():
+    """run opens by echoing its command, and that block closes with END too.
+
+    The count is what "my command has finished" is decided against, so a
+    sentinel that merely ends the echo must not advance it -- a run would
+    otherwise look complete before it had started.
+    """
+    relay = make_relay()
+    relay._count_helper_frames(
+        b"<<<LUDVART:BEGIN_DISPLAY_CMD op=run>>>\nmake\n"
+        b"<<<LUDVART:END_DISPLAY_CMD op=run>>>\n<<<LUDVART:BEGIN op=run>>>\n"
+    )
+    assert relay._helper_frames == 0, relay._helper_frames
+    relay._count_helper_frames(b"ok\n<<<LUDVART:END op=run exit=0>>>\n")
+    assert relay._helper_frames == 1, relay._helper_frames
+    print("the display block is not a finished call: OK")
+
+
 def test_a_frame_split_across_two_reads_is_counted_once():
     # A read boundary can fall anywhere, and a frame counted twice (or not at
     # all) would make a call wait for someone else's completion.
@@ -249,6 +267,7 @@ def test_background_turns_the_wait_off():
 def main():
     test_frames_are_counted_as_they_stream_past()
     test_a_frame_split_across_two_reads_is_counted_once()
+    test_the_display_block_is_not_a_finished_call()
     test_the_wait_ends_the_moment_the_frame_arrives()
     test_an_earlier_calls_frame_does_not_end_this_wait()
     test_a_silent_command_is_reported_as_still_running()

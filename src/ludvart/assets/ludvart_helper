@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, base64, argparse, subprocess, re, fnmatch, difflib, py_compile, json, signal
 
-VER = "0.6.0"
+VER = "0.7.0"
 CAPS = "read,write,append,replace,replace-range,structured-patch,search,run,info,spec"
 
 # The authoritative interface reference. ludvart folds this verbatim into the
@@ -27,11 +27,14 @@ Base64-decode the line between BEGIN and END to get the payload. Decide success
 or failure from exit= alone. The one exception is op=usage (exit=7), whose
 payload is plain text spanning several lines -- see the exit codes below.
 
-Every subcommand ends with that END sentinel, run included -- run is only the
-exception to the BEGIN half, because its command writes straight to the terminal
-instead of returning a payload. So the real exit status of anything the helper
-runs is always there on screen: read exit= rather than judging the outcome from
-what the output looks like.
+Every subcommand is wrapped in that pair, run included -- but what run puts
+between them is the command's own output, on the terminal, not a base64
+payload. run also opens with a display block naming what it is about to run:
+    BEGIN_DISPLAY_CMD / END_DISPLAY_CMD, with the decoded command on the lines
+    between them, so the terminal shows what ran rather than only its base64.
+The real exit status of anything the helper runs is therefore always there on
+screen: read exit= rather than judging the outcome from what the output looks
+like.
 
 Exit codes:
     0  success
@@ -142,9 +145,10 @@ search PATTERN [--path P] [--glob G]
     ~/.ludvart/bin/ludvart_helper search "def main" --path src --glob "*.py"
 
 run --b64 CMD
-    Run the decoded CMD through the shell with its stdout and stderr going
-    straight to the terminal, then print only the END sentinel. exit= on that
-    sentinel is the command's real status, propagated from the child process
+    Echo the decoded CMD in a display block, then run it through the shell with
+    its stdout and stderr going straight to the terminal, between the usual
+    BEGIN and END sentinels. exit= on the END sentinel is the command's real
+    status, propagated from the child process
     (for a pipeline, that of the last command). It is the answer to "did this
     work?" -- a compiler, a test run or a linter that printed nothing alarming
     still failed if exit= is non-zero.
@@ -492,6 +496,13 @@ def _child_default_signals():
 
 def op_run(a):
     cmd = _b64(a.b64, "--b64").decode()
+    # The base64 on the command line means nothing to whoever is watching the
+    # terminal. On its own lines rather than inside a sentinel, so a multi-line
+    # command stays readable and cannot run off the end of one.
+    sys.stdout.write("<<<LUDVART:BEGIN_DISPLAY_CMD op=run>>>\n%s\n"
+                     "<<<LUDVART:END_DISPLAY_CMD op=run>>>\n"
+                     "<<<LUDVART:BEGIN op=run>>>\n" % cmd)
+    sys.stdout.flush()
     # Ctrl-C reaches every process in the foreground group, the helper included.
     # Dying here would print a traceback and no sentinel, leaving a caller that
     # watches for exit= waiting for a frame that never comes -- so the helper

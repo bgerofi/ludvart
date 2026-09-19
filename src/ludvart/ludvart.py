@@ -2978,8 +2978,9 @@ class Ludvart:
     #: scrolled out of the viewport still happened, and the count only ever
     #: grows, so "did MY command finish" is a comparison against a number taken
     #: before it was typed -- no confusion with an identical frame left over
-    #: from the previous call.
-    _HELPER_FRAME = b"<<<LUDVART:END"
+    #: from the previous call. The ``op=`` is part of the match so the helper's
+    #: other END sentinels (END_DISPLAY_CMD) are not counted as calls.
+    _HELPER_FRAME = b"<<<LUDVART:END op="
 
     #: Class-level defaults so the counter reads sanely on a bare instance.
     _helper_frames = 0

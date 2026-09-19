@@ -922,8 +922,9 @@ def helper_edit_lines(name: str, args: dict) -> list[str]:
 
 
 #: ``exit=`` on the helper's END sentinel is the real status of a call. It sits
-#: well inside the first screen row, so a wrapped sentinel still matches.
-_HELPER_EXIT_RE = re.compile(r"LUDVART:END[^\n]*?exit=(\d+)")
+#: well inside the first screen row, so a wrapped sentinel still matches. The
+#: ``op=`` keeps the helper's other END sentinels (END_DISPLAY_CMD) out.
+_HELPER_EXIT_RE = re.compile(r"LUDVART:END op=[^\n]*?exit=(\d+)")
 
 
 def helper_exit_code(result: str) -> int | None:
