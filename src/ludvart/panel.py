@@ -100,6 +100,9 @@ class AiPanel:
         # When set, the bottom input line accepts a steering instruction using
         # this prompt instead of the normal ludvart prompt.
         self.steer_prompt = ""
+        # When set, a list picker takes over the panel: the transcript and the
+        # input line are hidden behind it until it is cancelled or chosen from.
+        self.picker = None
         # Seconds the current activity has been waiting, appended to the spinner
         # label (e.g. "Thinking (openai) - 8s") so a long, silent wait for a tool
         # or the next model response is visibly progressing. None hides it.
@@ -227,6 +230,8 @@ class AiPanel:
 
     def cursor_col(self) -> int:
         """1-based column of the input cursor on the panel's input row."""
+        if self.picker is not None:
+            return 1
         if self.confirm_prompt:
             return min(self.cols, len(self.confirm_prompt) + 1)
         if self.steer_prompt:
@@ -241,6 +246,11 @@ class AiPanel:
         The input block is the last thing the panel draws, so its rows sit at
         the bottom whatever height the panel currently has.
         """
+        if self.picker is not None:
+            # On the highlighted row, so the terminal's own cursor agrees with
+            # the highlight instead of blinking on a hidden input line.
+            body = max(1, self.height - 2)
+            return 1 + min(body - 1, max(0, self.picker.index - self.picker.top)), 1
         rows = 1
         if not (self.confirm_prompt or self.steer_prompt or self.masked):
             rows = len(self._input_block()[0])
@@ -399,6 +409,7 @@ class AiPanel:
             label += f"· {self.activity} "
         hints = (
             f"{self.summon_label}/Esc:close  M-Enter:newline  ^N:numbers  "
+            "^P/^S/^L:profile/session/model  "
             "S-arrows/^Space:select  PgUp/Dn:scroll "
         )
         if self.editor.mark:
@@ -441,6 +452,8 @@ class AiPanel:
         """Return exactly ``height`` drawable row payloads for the panel."""
         self.set_cols(cols)
         self.height = height
+        if self.picker is not None:
+            return self._render_picker(height, cols)
         input_rows = self._input_line()[: max(1, height - 2)]
         content_h = max(1, height - 1 - len(input_rows))
 
@@ -455,6 +468,25 @@ class AiPanel:
         rows = [self._header(start)]
         rows += window
         rows += input_rows
+        if len(rows) > height:
+            rows = rows[:height]
+        while len(rows) < height:
+            rows.append(_RESET + _EOL)
+        return rows
+
+    def _render_picker(self, height: int, cols: int) -> list[bytes]:
+        """Draw the picker over the whole panel, keeping its own title and hint.
+
+        It replaces the transcript rather than floating above it: the panel is
+        only a handful of rows to begin with, so a box inside a box would leave
+        room for two or three choices.
+        """
+        picker = self.picker
+        bar = picker.header(cols).ljust(cols).encode("utf-8", "replace")
+        hint = picker.hint(cols).ljust(cols).encode("utf-8", "replace")
+        rows = [_REVERSE + bar + _RESET + _EOL]
+        rows += picker.render(max(1, height - 2), cols)
+        rows.append(_REVERSE + hint + _RESET + _EOL)
         if len(rows) > height:
             rows = rows[:height]
         while len(rows) < height:

@@ -32,6 +32,7 @@ import pyte
 
 from .overlay import ScrollbackViewer
 from .panel import AiPanel
+from .picker import APPLY_COMMAND, Picker
 from .render import Compositor, render_row
 from .screen import LudvartScreen
 from .terminal_host import TerminalHost
@@ -89,6 +90,15 @@ AGENT_HOTKEYS: dict[str, bytes] = {
     "ctrl-]": b"\x1d",
 }
 DEFAULT_SUMMON = AGENT_HOTKEYS["ctrl-o"]
+
+#: Panel keys that open a list picker instead of typing a character. These are
+#: only free inside the panel, where the shell's line editor is not listening.
+#: Ctrl-M is not among them and cannot be: the terminal sends it as Enter.
+PICKER_KEYS: dict[bytes, str] = {
+    b"\x10": "profile",  # ^P
+    b"\x13": "session",  # ^S
+    b"\x0c": "model",  # ^L
+}
 
 
 def hotkey_label(key: bytes) -> str:
@@ -1043,9 +1053,13 @@ class Ludvart:
         while not self._panel_closing:
             if self._resized:
                 self._handle_split_resize()
-            # While waiting on the LLM, wake up periodically to advance the
-            # spinner animation.
-            timeout = 0.12 if (self._panel and self._panel.thinking) else None
+            panel = self._panel
+            # A picker is filled in by a worker thread, so the loop has to wake
+            # up to notice rather than sit in select until a key arrives.
+            loading = panel is not None and panel.picker is not None and (
+                panel.picker.loading
+            )
+            timeout = 0.12 if (panel and panel.thinking) or loading else None
             try:
                 readable, _, _ = select.select([master, stdin], [], [], timeout)
             except InterruptedError:
@@ -1064,6 +1078,8 @@ class Ludvart:
                     self._panel_input(data)
                     if not self._panel_closing:
                         self._render_split()
+            if loading and not self._picker_is_loading():
+                self._render_split()  # the list landed while we were waiting
             if self._panel is not None and self._panel.thinking:
                 if self._ask_done.is_set():
                     self._finish_ask()
@@ -1167,6 +1183,9 @@ class Ludvart:
         """Route a stdin read to the panel, extracting bracketed pastes first."""
         if self._inject_approval_pending:
             self._handle_inject_approval(data)
+            return
+        if self._panel is not None and self._panel.picker is not None:
+            self._handle_picker_input(data)
             return
         if self._steer_input:
             self._handle_steer_input(data)
@@ -1294,6 +1313,94 @@ class Ludvart:
             self._panel.confirm_prompt = ""
         self._panel_hidden_at = time.monotonic()
         self._panel_closing = True
+
+    def _open_picker(self, kind: str) -> None:
+        """Show the list of profiles / sessions / models to choose from.
+
+        Refused while a turn is running: every choice replaces something the
+        turn is standing on (its profile, its conversation, its model), and the
+        keys are close enough to the ones used for editing that a stray press
+        must not be able to do that.
+        """
+        panel = self._panel
+        if panel is None or panel.thinking or panel.picker is not None:
+            return
+        if self._model_add is not None or self._profile_add is not None:
+            return  # a guided flow owns the input line
+        picker = Picker(kind)
+        panel.picker = picker
+        self._render_split()
+        # The list lives on the backend, a round trip away. Fetching it here
+        # would freeze the panel on the keystroke; the picker shows that it is
+        # loading and fills in when the answer lands.
+        threading.Thread(
+            target=self._fill_picker, args=(picker,), daemon=True
+        ).start()
+
+    def _fill_picker(self, picker) -> None:
+        """Fetch a picker's items from the backend and hand them over."""
+        if self._backend_client is None:
+            picker.fail("No backend is connected.")
+            return
+        try:
+            reply = self._backend_client.request(
+                f"pick {picker.kind}", _ClientTerminalHost(self)
+            )
+            items = list(reply.get("items") or [])
+        except (ConnectionError, OSError) as exc:
+            picker.fail(f"Could not reach the backend: {exc}")
+            return
+        # Esc may have closed it while the answer was in flight; filling a
+        # picker nobody is looking at would resurrect it on the next render.
+        if self._panel is not None and self._panel.picker is picker:
+            picker.set_items(items)
+
+    def _picker_is_loading(self) -> bool:
+        panel = self._panel
+        return (
+            panel is not None and panel.picker is not None and panel.picker.loading
+        )
+
+    def _close_picker(self) -> None:
+        panel = self._panel
+        if panel is not None:
+            panel.picker = None
+
+    def _handle_picker_input(self, data: bytes) -> None:
+        """Navigate the open picker; Enter applies, Esc leaves it alone."""
+        panel = self._panel
+        picker = panel.picker
+        rows = max(1, panel.height - 2)
+        if data in (b"\x1b", b"\x03"):  # Esc / Ctrl-C
+            self._close_picker()
+        elif data in (b"\r", b"\n"):
+            self._apply_picked()
+        elif data in (b"\x1b[A", b"\x1bOA"):
+            picker.move(-1)
+        elif data in (b"\x1b[B", b"\x1bOB"):
+            picker.move(1)
+        elif data == b"\x1b[5~":  # PageUp
+            picker.move(-rows)
+        elif data == b"\x1b[6~":  # PageDown
+            picker.move(rows)
+        elif data in (b"\x1b[H", b"\x1bOH", b"\x1b[1~", b"\x1b[7~"):
+            picker.to_end(False)
+        elif data in (b"\x1b[F", b"\x1bOF", b"\x1b[4~", b"\x1b[8~"):
+            picker.to_end(True)
+        self._render_split()
+
+    def _apply_picked(self) -> None:
+        """Run the backend command that makes the highlighted item current."""
+        panel = self._panel
+        picker = panel.picker
+        item = picker.selected()
+        kind = picker.kind
+        self._close_picker()
+        if item is None:
+            return
+        command = f"{APPLY_COMMAND[kind]} {item.get('ref', '')}".strip()
+        panel.add_system(f"> /{command}")
+        self._forward_command_to_backend(command)
 
     def _enter_steer_input(self) -> None:
         """Replace the close prompt with an editable steering input line."""
@@ -1652,6 +1759,8 @@ class Ludvart:
             panel.scroll = 0
         elif key == b"\x0e":  # Ctrl-N -> show/hide the message numbers
             panel.show_numbers = not panel.show_numbers
+        elif key in PICKER_KEYS:
+            self._open_picker(PICKER_KEYS[key])
         elif key == b"\t":  # Tab -> complete an internal slash command
             self._complete_input()
         elif key[:1] == b"\x1b":

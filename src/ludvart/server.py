@@ -198,6 +198,8 @@ def _handle_command(msg, manager, core, channel: FrameChannel) -> None:
         _handle_session(parts[1:], core, channel, emit)
     elif cmd == "profile":
         _handle_profile(parts[1:], core, channel, emit, payload)
+    elif cmd == "pick":
+        result = _handle_pick(parts[1:], manager, core)
     elif cmd == "compact":
         _do_compact(parts[1:], core, channel, emit)
     elif cmd == "mcp_refresh":
@@ -372,6 +374,67 @@ def _handle_model(args, manager, core, channel: FrameChannel, emit, payload=None
     else:
         emit(f"Supported: list, use, add, remove, verify-all (got {sub!r}).")
     return None
+
+
+def _handle_pick(args, manager, core) -> dict:
+    """List profiles / sessions / models as choices for the panel's picker.
+
+    The same registries the ``/profile``, ``/session`` and ``/model`` commands
+    read, returned as data rather than rendered lines: the picker needs to know
+    which entry is current and what to say back to select one, neither of which
+    survives being formatted for display. ``ref`` is what the matching ``use``
+    or ``load`` command accepts, so choosing is just running that command.
+    """
+    kind = args[0] if args else ""
+    if kind == "profile":
+        from .profiles import load_profiles
+
+        return {
+            "items": [
+                {
+                    "label": f"{p['name']}  ({p['dir']}/)",
+                    "ref": str(i),
+                    "active": bool(p.get("active")),
+                }
+                for i, p in enumerate(load_profiles(), 1)
+            ]
+        }
+    if kind == "session":
+        from .session import list_sessions
+
+        # Refreshed here as well as by /session list, because the positions we
+        # hand out are only meaningful against the list the backend holds.
+        core.session_list = list_sessions()
+        current = core.session.session_id if core.session is not None else None
+        items = []
+        for i, s in enumerate(core.session_list, 1):
+            label = " ".join((s.get("title") or s.get("preview") or "").split())
+            items.append(
+                {
+                    "label": f"{s['id']}  ({s['count']} msgs)  {label}".rstrip(),
+                    "ref": str(i),
+                    "active": s["id"] == current,
+                }
+            )
+        return {"items": items}
+    if kind == "model":
+        if manager is None:
+            return {"items": []}
+        from .models import label as model_label
+
+        active = manager.active_index()
+        items = []
+        for i, reg in enumerate(manager.models):
+            mark = "" if manager.available[i] else "  (unavailable)"
+            items.append(
+                {
+                    "label": f"{model_label(reg)}{mark}",
+                    "ref": str(i + 1),
+                    "active": i == active,
+                }
+            )
+        return {"items": items}
+    return {"items": []}
 
 
 def _copilot_model_choices() -> dict:
