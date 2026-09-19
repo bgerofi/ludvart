@@ -885,7 +885,16 @@ class AgentCore:
         return None
 
     def _tool_get_past_snapshot(self, args: dict) -> str:
-        """Return a stored past screen snapshot addressed by its timestamp."""
+        """Return a stored past screen snapshot addressed by its timestamp.
+
+        The answer is wrapped in ``<pastScreenContext>`` rather than the usual
+        tag, which is what keeps it out of :meth:`_collapse_screenshots`. Under
+        the shared tag this result was the newest snapshot in the history the
+        instant it landed, so it was collapsed straight back to the breadcrumb
+        the model was trying to expand and re-attached at the end of the prompt
+        as the live screen -- the model asked for the past and was handed it
+        labelled "right now", with the real screen displaced.
+        """
         ts = args.get("timestamp")
         if not isinstance(ts, str) or not ts.strip():
             return (
@@ -902,8 +911,9 @@ class AgentCore:
                 "exactly as it appears in a breadcrumb."
             )
         return (
-            f"Terminal screen snapshot captured at {ts}:\n"
-            f'<screenContext ts="{ts}">\n'
+            f"Terminal screen snapshot as it was at {ts}. This is a copy from "
+            "the past, not the terminal now:\n"
+            f'<pastScreenContext ts="{ts}">\n'
             f"{snapshot}\n"
-            "</screenContext>"
+            "</pastScreenContext>"
         )

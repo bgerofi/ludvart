@@ -203,6 +203,47 @@ def test_the_newest_screen_survives_even_when_a_tool_reported_it():
     print("the newest screen survives whoever reported it: OK")
 
 
+def test_the_answer_survives_the_next_request():
+    """The retrieved snapshot must reach the model, and not pose as the screen.
+
+    It used to come back under the same <screenContext> tag as everything else,
+    which made it the newest snapshot in the history the moment it landed. The
+    next request therefore collapsed it straight back to the breadcrumb the
+    model had just expanded, and re-attached it at the end as the live screen.
+    The model got the past labelled "right now" and lost the real screen with it.
+    """
+    r = _core()
+    ts_old = "2026-07-06T09:00:00.000000001"
+    ts_now = "2026-07-06T09:30:00.000000002"
+    r.history = [_user_turn(ts_old, "OLD SCREEN BODY", "q")]
+    answer = r._tool_get_past_snapshot({"timestamp": ts_old})
+    r.history = [
+        _user_turn(ts_old, "OLD SCREEN BODY", "q"),
+        {"role": "assistant", "content": "looking back"},
+        _user_turn(ts_now, "LIVE SCREEN BODY", "and now?"),
+        {"role": "assistant", "content": "checking"},
+        {"role": "tool", "content": answer},
+    ]
+
+    stripped, live = AgentCore._collapse_screenshots(r.history)
+
+    assert "OLD SCREEN BODY" in stripped[-1]["content"], stripped[-1]
+    assert "LIVE SCREEN BODY" in live, live
+    assert "OLD SCREEN BODY" not in live, live
+    print("the retrieved snapshot survives the next request: OK")
+
+
+def test_the_answer_says_it_is_from_the_past():
+    r = _core()
+    ts = "2026-07-06T09:00:00.000000001"
+    r.history = [_user_turn(ts, "OLD SCREEN BODY", "q")]
+    out = r._tool_get_past_snapshot({"timestamp": ts})
+    assert "<pastScreenContext" in out, out
+    assert "<screenContext" not in out, out
+    assert "not the terminal now" in out, out
+    print("the answer says it is from the past: OK")
+
+
 def test_the_live_screen_is_carried_by_the_trailing_block():
     """The one live snapshot is re-attached at the end, not left where it was.
 
@@ -254,6 +295,8 @@ def main():
     test_stripping_keeps_timestamp_breadcrumb_and_snapshot_retrievable()
     test_a_tool_results_screen_is_stamped_and_then_superseded()
     test_the_newest_screen_survives_even_when_a_tool_reported_it()
+    test_the_answer_survives_the_next_request()
+    test_the_answer_says_it_is_from_the_past()
     test_the_live_screen_is_carried_by_the_trailing_block()
     test_a_screenless_history_still_gets_a_trailing_block()
     test_stamping_leaves_an_already_stamped_screen_alone()
