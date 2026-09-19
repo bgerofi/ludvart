@@ -13,7 +13,7 @@ import threading
 import time
 
 from ludvart.ludvart import Ludvart as RelayPTY
-from ludvart.ludvart import _duration
+from ludvart.ludvart import _ClientTerminalHost, _duration
 from ludvart.panel import AiPanel
 
 
@@ -191,7 +191,53 @@ def test_an_ordinary_toggle_says_nothing():
     assert relay._panel_hidden_at is None
     relay._panel = None
     assert open_again(relay) == []
+    assert relay._resume_note is None
     print("an ordinary toggle says nothing: OK")
+
+
+def test_the_model_is_told_it_was_parked():
+    relay = make_relay()
+    relay._handle_confirm_close(b"h")
+    relay._panel_hidden_at = time.monotonic() - 75
+    relay._panel = None
+    open_again(relay)
+    note = relay._resume_note
+    assert note is not None, "the model would have to guess"
+    assert "1m15s" in note, note
+    assert "typed nothing" in note, note
+    # What the user did in there is unknown, so it must not be asserted.
+    assert "Ctrl-C" not in note, note
+    print("the model is told it was parked: OK")
+
+
+def test_the_pause_note_rides_the_next_tool_result():
+    relay = make_relay()
+    relay._perf_add = lambda *a: None
+    relay._tool_capture_screen_history = lambda args: "screen"
+    relay._resume_note = "<terminalPause>\nparked\n</terminalPause>"
+    host = _ClientTerminalHost(relay)
+    first = host.run_terminal_tool("capture_screen_history", {})
+    assert first.startswith("<terminalPause>"), first
+    assert first.endswith("screen"), first
+    assert host.run_terminal_tool("capture_screen_history", {}) == "screen"
+    print("the pause note rides the next tool result: OK")
+
+
+def test_the_pause_note_reaches_a_model_that_only_speaks():
+    """A turn that resumes and just answers still has to hear about the park."""
+    relay = make_relay(thinking=False)
+    relay._resume_note = "<terminalPause>\nparked\n</terminalPause>"
+    asked = []
+    relay._ai_ask = lambda q: asked.append(q) or ""
+    relay._render_split = lambda: None
+    relay._start_ask("what is running?")
+    relay._ask_thread.join(2)
+    assert asked and asked[0].startswith("<terminalPause>"), asked
+    assert asked[0].endswith("what is running?"), asked
+    # A retry replays the root question, which must not repeat the pause.
+    assert relay._ask_root_question == "what is running?"
+    assert relay._resume_note is None
+    print("the pause note reaches a model that only speaks: OK")
 
 
 def test_durations_read_like_durations():
@@ -214,6 +260,9 @@ def main():
     test_the_user_is_told_the_turn_was_picked_back_up()
     test_the_user_is_told_when_the_parked_turn_expired()
     test_an_ordinary_toggle_says_nothing()
+    test_the_model_is_told_it_was_parked()
+    test_the_pause_note_rides_the_next_tool_result()
+    test_the_pause_note_reaches_a_model_that_only_speaks()
     test_durations_read_like_durations()
     print("\nALL panel hide/park tests passed.")
 

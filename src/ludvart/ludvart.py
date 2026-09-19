@@ -240,10 +240,14 @@ class _ClientTerminalHost(TerminalHost):
     def run_terminal_tool(self, name: str, args: dict) -> str:
         with self._app._perf_timer(f"tool:{name}"):
             if name == "inject_input":
-                return self._app._tool_inject_input(args)
-            if name == "capture_screen_history":
-                return self._app._tool_capture_screen_history(args)
-            return f"[ludvart] unknown terminal tool: {name}"
+                result = self._app._tool_inject_input(args)
+            elif name == "capture_screen_history":
+                result = self._app._tool_capture_screen_history(args)
+            else:
+                return f"[ludvart] unknown terminal tool: {name}"
+        # Taken after the call, not before: a tool that parked at the approval
+        # gate is the very call the pause happened during.
+        return self._app._take_resume_note() + result
 
     def narrate(self, text: str) -> None:
         panel = self._app._panel
@@ -569,6 +573,8 @@ class Ludvart:
         # the next open, which is the first chance to say anything at all.
         self._panel_hidden_at: float | None = None
         self._park_expired: str | None = None
+        # What the model is told about the pause, on the next thing it reads.
+        self._resume_note: str | None = None
 
         # How many ludvart_helper END frames have gone past on the child's
         # output, and the partial one split across the last read. Lets a tool
@@ -975,8 +981,36 @@ class Ludvart:
             "hidden. The agent typed nothing into the terminal while you had "
             "it; whatever you did in there stands."
         )
+        self._resume_note = self._compose_resume_note(away)
         panel.thinking = True
         self._panel_hidden_at = None
+
+    @staticmethod
+    def _compose_resume_note(away: float) -> str:
+        """Tell the model it was parked, in facts it cannot read off a screen.
+
+        A shell prompt looks the same whether a command ended on its own or was
+        killed, so the one thing worth saying is that the terminal belonged to
+        somebody else for a while. What they did with it is not guessed at:
+        ludvart does not know, and an invented answer would be reasoned from.
+        """
+        return (
+            "<terminalPause>\n"
+            f"The user hid the AI panel for {_duration(away)} and had the "
+            "terminal to themselves. You were parked for that whole time and "
+            "typed nothing into it. They may have run or interrupted anything "
+            "in there, so what you knew about the terminal before the pause "
+            "may no longer hold.\n"
+            "</terminalPause>"
+        )
+
+    def _take_resume_note(self) -> str:
+        """Consume the pending pause note, or return an empty string."""
+        note = self._resume_note
+        if not note:
+            return ""
+        self._resume_note = None
+        return note + "\n"
 
     def _maybe_start_backend_setup(self) -> None:
         """Run the guided registration when the backend has no model yet.
@@ -2212,6 +2246,8 @@ class Ludvart:
         self._ask_root_question = (
             root_question if root_question is not None else question
         )
+        # Kept out of the root question so a retry does not replay the pause.
+        question = self._take_resume_note() + question
         self._render_split()  # show the question and the spinner immediately
 
         ask = self._ai_ask
@@ -2839,6 +2875,7 @@ class Ludvart:
     #: Class-level defaults so the counter reads sanely on a bare instance.
     _helper_frames = 0
     _frame_carry = b""
+    _resume_note: str | None = None
 
     def _count_helper_frames(self, data: bytes) -> None:
         """Tally helper END frames as they stream past, carrying split ones."""
